@@ -249,6 +249,30 @@ class SurfaceSource(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'finite, complete grid'):
                 surface.render(city,folder/'surface.npz',folder/'osm.json',None,folder/'bad')
 
+    def test_orthophoto_colours_untagged_roofs_and_tags_win(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder=Path(t); dsm=np.zeros((40,40),np.float32); dsm[14:26,4:16]=8; dsm[14:26,24:36]=8
+            rgb=np.zeros((40,40,3),np.uint8); rgb[:]=(30,160,40); rgb[16:24,6:14]=(200,40,30); rgb[16:24,26:34]=(200,40,30)
+            square=lambda x0,x1:[{'lon':x/111320,'lat':y/111320} for x,y in ((x0,-6),(x1,-6),(x1,6),(x0,6),(x0,-6))]
+            (folder/'osm.json').write_text(json.dumps({'elements':[
+                {'type':'way','id':1,'tags':{'building':'yes'},'geometry':square(-16,-4)},
+                {'type':'way','id':2,'tags':{'building':'yes','roof:colour':'#334455'},'geometry':square(4,16)}]}))
+            def roofs(npz):
+                np.savez_compressed(folder/'surface.npz',**npz)
+                meta=surface.render(fixture(),folder/'surface.npz',folder/'osm.json',None,folder/str(len(npz)))
+                M=np.array(meta['camera']['pixel_matrix'])
+                with Image.open(folder/str(len(npz))/'source.png') as image: a=np.asarray(image)
+                pick=lambda e:a[tuple(np.rint(M@[e,0,8,1]).astype(int)[::-1])]
+                return meta,pick(-10),pick(10)
+            base=dict(dsm=dsm,dtm=np.zeros_like(dsm),bounds=[-20,-20,20,20])
+            plain,_,_=roofs(base)
+            meta,untagged,tagged=roofs({**base,'rgb':rgb})
+            self.assertFalse(plain['roof_colour_from_orthophoto']); self.assertTrue(meta['roof_colour_from_orthophoto'])
+            self.assertGreater(int(untagged[0]),int(untagged[1])+60)
+            self.assertGreater(int(tagged[2]),int(tagged[0]))
+            with self.assertRaisesRegex(ValueError,'Orthophoto rgb'):
+                roofs({**base,'rgb':rgb[:-1],'x':0})
+
     def test_default_recipe_and_pinned_grid(self):
         city=json.loads((ROOT/'cities/edinburgh.json').read_text())
         c=surface.validate(city['surface'])['camera']

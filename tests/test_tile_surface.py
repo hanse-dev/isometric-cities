@@ -1,0 +1,107 @@
+"""Tiled surface rendering joins pixel-exactly and keeps per-building colours whole."""
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'source'))
+import tile_surface as ts
+
+
+def city(size=240, res=1.):
+    half = size * res / 2
+    return {'id': 'fixture', 'bbox': [-.003, -.003, .003, .003], 'surface': {
+        'crs': 'EPSG:3857', 'resolution_m': res, 'bounds_projected_m': [-half, -half, half, half],
+        'description': 'Synthetic measured surface', 'colour_evidence': 'Fixture', 'attribution': ['Fixture'], 'rasters': [],
+        'camera': {'centre_projected_m': [0., 0.], 'u_range_m': [-110., 110.], 'y_range_screen_m': [-90., 70.],
+                   'z0_m': 0., 'bearing_deg': 313.6, 'elevation_deg': 35.264389682754654, 'pixels_per_metre': 2.}}}
+
+
+def square(cx, cy, r):
+    m = 111320.0  # EPSG:3857 metres per degree near the equator
+    return [{'lon': (cx + dx) / m, 'lat': (cy + dy) / m} for dx, dy in ((-r, -r), (r, -r), (r, r), (-r, r), (-r, -r))]
+
+
+def scene(folder, size=240, res=1.):
+    rng = np.random.default_rng(7)
+    dtm = np.add.outer(np.linspace(0, 3, size), np.linspace(0, 2, size)).astype(np.float32)
+    dsm = dtm.copy()
+    yy, xx = np.mgrid[:size, :size]
+    elements, k = [], 1
+    for cx in range(-90 * size // 240, 91 * size // 240, 45):
+        for cy in range(-90 * size // 240, 91 * size // 240, 45):
+            r = 8 + (k % 3) * 4
+            j, i = int((cx + size * res / 2) / res), int((size * res / 2 - cy) / res)
+            inside = (abs(xx - j) <= r / res) & (abs(yy - i) <= r / res)
+            dsm[inside] = dtm[inside] + 6 + (k % 4) * 5 + (np.abs(xx - j)[inside] < 2) * 3   # ridge
+            tags = {'building': 'yes'}
+            if k % 5 == 0: tags['roof:colour'] = '#335577'
+            elements.append({'type': 'way', 'id': k, 'tags': tags, 'geometry': square(cx, cy, r)})
+            k += 1
+    trees = (rng.random((size, size)) < .02) & (dsm == dtm)
+    dsm += ndimage_tree(trees, rng)
+    tower = (np.abs(xx - size // 2 - 5) < 2) & (np.abs(yy - size // 2 - 20) < 2)
+    dsm[tower] += 60                                                                 # tall spire crosses tile rows
+    rgb = np.zeros((size, size, 3), np.uint8); rgb[..., 0] = 170; rgb[..., 1] = 80 + (xx % 50); rgb[..., 2] = 60
+    np.savez_compressed(folder / 'surface.npz', dsm=dsm.astype(np.float32), dtm=dtm, bounds=np.array(city(size, res)['surface']['bounds_projected_m']), rgb=rgb)
+    elements.append({'type': 'way', 'id': 999, 'tags': {'highway': 'residential'}, 'geometry': [{'lon': -100 / 111320, 'lat': 3 / 111320}, {'lon': 100 / 111320, 'lat': 3 / 111320}]})
+    (folder / 'osm.json').write_text(json.dumps({'elements': elements}))
+
+
+def ndimage_tree(trees, rng):
+    from scipy import ndimage as ndi
+    crowns = ndi.binary_dilation(trees, iterations=3)
+    return (crowns * (4 + 6 * rng.random(trees.shape))).astype(np.float32)
+
+
+class TileSurface(unittest.TestCase):
+    def test_tiles_join_bit_exactly_with_one_large_render(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder, 640)
+            surf = ts.Surface(city(640), folder / 'surface.npz', folder / 'osm.json')
+            table = surf.building_table(chunk=64)
+            crops = []
+            whole = surf.render_tile(table, 0, 0, surf.width, surf.height)
+            self.assertEqual(whole.shape, (surf.height, surf.width, 3))
+            self.assertGreater(len(np.unique(whole.reshape(-1, 3), axis=0)), 50)
+            for size in (97, 160):
+                tiled = np.zeros_like(whole)
+                for y0 in range(0, surf.height, size):
+                    for x0 in range(0, surf.width, size):
+                        w, h = min(size, surf.width - x0), min(size, surf.height - y0)
+                        tiled[y0:y0 + h, x0:x0 + w] = surf.render_tile(table, x0, y0, w, h)
+                        r0, r1, c0, c1 = surf.cells_for(x0, y0, w, h)
+                        crops.append((min(r1 + ts.MARGIN, 640) - max(r0 - ts.MARGIN, 0)) * (min(c1 + ts.MARGIN, 640) - max(c0 - ts.MARGIN, 0)))
+                np.testing.assert_array_equal(tiled, whole)
+            self.assertLess(max(crops), .7 * 640 * 640)   # every tile really worked on a partial grid
+
+    def test_building_table_does_not_depend_on_chunking(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder)
+            surf = ts.Surface(city(), folder / 'surface.npz', folder / 'osm.json')
+            a, b = surf.building_table(chunk=40), surf.building_table(chunk=1000)
+            for key in a:
+                np.testing.assert_array_equal(a[key], b[key])
+            self.assertTrue(a['has_roof'][1:].all())                       # photo colour for untagged roofs
+            np.testing.assert_array_equal(a['roofc'][5], [0x33, 0x55, 0x77])  # tag wins over photo
+
+    def test_small_holes_fill_but_open_ground_stays(self):
+        m = np.ones((20, 60), bool)
+        m[5:8, 5:8] = False          # small enclosed gap
+        m[2:18, 20:58] = False       # large opening
+        out = ts.fill_small_holes(m, 10)
+        self.assertTrue(out[5:8, 5:8].all())
+        self.assertFalse(out[2:18, 20:58].any())
+
+    def test_near_ids_prefers_closest_footprint(self):
+        bid = np.zeros((7, 9), np.int32); bid[3, 1] = 4; bid[3, 7] = 9
+        out = ts.near_ids(bid)
+        self.assertEqual(out[3, 3], 4); self.assertEqual(out[3, 5], 9); self.assertEqual(out[3, 4], 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

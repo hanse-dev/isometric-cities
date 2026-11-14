@@ -259,6 +259,18 @@ def render(city, surface, osm, grid, out, *, scale=None, variant=None):
         if at is None: continue
         if at['roof'] is not None: roofc[k] = at['roof']; has_roof[k] = True
         wallc[k] = at['wall'] if at['wall'] is not None else P['sandstone']
+    # an orthophoto aligned in the NPZ gives each untagged roof one median colour, sampled clear of its eaves
+    photo = 'rgb' in L.files
+    if photo:
+        rgb = L['rgb']
+        if rgb.shape != (ny, nx, 3) or rgb.dtype != np.uint8:
+            raise ValueError('Orthophoto rgb must be uint8 on the DSM/DTM grid')
+        core = ndi.binary_erosion(bmask, iterations=2) & (bidd > 0)
+        k, cells = bidd[core], rgb[core]
+        order = np.argsort(k, kind='stable'); k, cells = k[order], cells[order]
+        ids, start = np.unique(k, return_index=True)
+        for b, part in zip(ids, np.split(cells, start[1:])):
+            if not has_roof[b]: roofc[b] = np.median(part, 0); has_roof[b] = True
     # per-building flatness from LiDAR: share of roof cells under 10 degrees
     lab = np.where(bmask, bidd, 0)
     cnt = np.bincount(lab.ravel(), minlength=len(attrs)); flat = np.bincount(lab.ravel(), weights=(slope.ravel() < 10), minlength=len(attrs))
@@ -337,7 +349,7 @@ def render(city, surface, osm, grid, out, *, scale=None, variant=None):
                     centre_projected_m=CENTRE, u_range_m=U_RANGE, y_range_screen_m=Y_RANGE, z0_m=Z0,
                     formula='u=dE*cos(b)-dN*sin(b), v=dE*sin(b)+dN*cos(b); X=(u-u0)*s; Y=(-(sin(e)*v+cos(e)*(z-z0))-y0)*s'),
         size=[Wd, Hh], variant=variant, palette=P, light=Lv.round(3).tolist(),
-        colour_evidence=spec['colour_evidence'],
+        colour_evidence=spec['colour_evidence'], roof_colour_from_orthophoto=photo,
         facades='No window evidence in source; walls are plain shaded planes.',
         landmarks=lms,
         attribution=spec['attribution'],
