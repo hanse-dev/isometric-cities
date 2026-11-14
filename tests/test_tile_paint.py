@@ -114,7 +114,7 @@ class TilePaint(unittest.TestCase):
         c = city((-300., 200.))
         self.run_paint(c, Yellow(), store='now')
         tile = json.loads((self.folder / 'now/store.json').read_text())['tiles'][0]
-        fixed = [r for r in tile['recolour'] if r['evidence'] == 'osm-tag']
+        fixed = [r for r in tile['recolour'] if r['evidence'].startswith('osm-tag')]
         self.assertTrue(fixed and all(r['target_rgb'] == [0x33, 0x55, 0x77] for r in fixed))
         raw = np.asarray(Image.open(self.folder / 'now/tiles/0_0/art_raw.png')).astype(int)
         art = np.asarray(Image.open(self.folder / 'now/tiles/0_0/art.png')).astype(int)
@@ -132,7 +132,7 @@ class TilePaint(unittest.TestCase):
         self.assertEqual(json.loads((self.folder / 'later/store.json').read_text())['tiles'][0]['art_sha256'], tile['art_sha256'])
 
     def test_recolour_uses_one_gain_per_roof_and_spares_walls_and_water(self):
-        class Fake: attrs = [None, {'osm': 'way/1', 'name': 'Kirche'}]
+        class Fake: attrs = [None, {'osm': 'way/1', 'name': 'Kirche'}]; P = {'copper': (112, 164, 142)}
         rng = np.random.default_rng(1)
         art = np.clip(np.full((60, 60, 3), (200, 190, 170)) + rng.normal(0, 12, (60, 60, 1)), 0, 255).astype(np.uint8)
         ids = np.zeros((60, 60), np.int32); ids[10:50, 10:50] = 1
@@ -146,6 +146,20 @@ class TilePaint(unittest.TestCase):
         ratio = out[sel].astype(float) / art[sel]
         self.assertLess(ratio.std(0).max(), .02)
         self.assertLess(np.abs(np.median(out[sel], 0) - [112, 164, 142]).max(), 3)
+
+    def test_many_small_parts_recolour_as_one_roof_and_osm_copper_becomes_patina(self):
+        class Fake:
+            P = {'copper': (112, 164, 142)}
+            attrs = [None] + [{'osm': f'way/{k}', 'name': 'St. Marien' if k == 1 else None, 'roof': (0x33, 0xCC, 0x99), 'wall': None} for k in range(1, 41)]
+        art = np.full((60, 60, 3), (200, 196, 180), np.uint8)
+        ids = np.zeros((60, 60), np.int32)
+        for k in range(40): ids[10 + (k // 8) * 8:18 + (k // 8) * 8, 10 + (k % 8) * 5:15 + (k % 8) * 5] = k + 1   # 40 parts of 40 px each
+        kind = (ids > 0).astype(np.uint8)
+        targets = tp.roof_targets(Fake, {'has_roof': np.zeros(41, bool), 'roofc': np.zeros((41, 3))})
+        self.assertTrue(all(np.allclose(t, (112, 164, 142)) for t, _ in targets.values()))
+        out, rec = tp.recolour(art, ids, kind, np.zeros((60, 60), bool), Fake, targets)
+        self.assertEqual(len(rec), 1); self.assertEqual(rec[0]['name'], 'St. Marien'); self.assertGreater(rec[0]['parts'], 30)
+        self.assertLess(np.abs(np.median(out[ids > 0], 0) - [112, 164, 142]).max(), 3)
 
     def test_frame_must_stay_on_the_store_lattice(self):
         self.run_paint(city((-300., 200.)), Painter(), store='s')

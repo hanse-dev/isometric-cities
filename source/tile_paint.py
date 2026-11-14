@@ -91,17 +91,26 @@ def from_chroma(y, cbcr):
     return np.clip(np.stack([r, g, b], -1) + .5, 0, 255).astype(np.uint8)
 
 
+OSM_COPPER = (0x33, 0xCC, 0x99)   # the stock "copper" roof:colour in OSM editors, far brighter than patina
+
+
 def roof_targets(surface, table, use_photo=False):
     """Building id -> (target colour, evidence) where the roof colour is tagged in OSM.
 
-    Orthophoto medians mix roof, shadow, dormers and glare; in Lübeck they recoloured ordinary roofs
-    lavender and teal, so they only count as evidence when use_photo is set."""
+    The editor default #33CC99 for copper is replaced by the palette's patina copper. Orthophoto
+    medians mix roof, shadow, dormers and glare; in Lübeck they recoloured ordinary roofs lavender
+    and teal, so they only count as evidence when use_photo is set."""
+    copper = np.asarray(surface.P['copper'], np.float32)
     targets = {}
     for k, at in enumerate(surface.attrs):
         if at is None:
             continue
         if at['roof'] is not None:
-            targets[k] = (np.asarray(at['roof'], np.float32), 'osm-tag')
+            colour = np.asarray(at['roof'], np.float32)
+            if np.abs(colour - OSM_COPPER).max() <= 6:
+                targets[k] = (copper, 'osm-tag (copper #33CC99 as patina)')
+            else:
+                targets[k] = (colour, 'osm-tag')
         elif use_photo and table['has_roof'][k]:
             colour = table['roofc'][k]
             if np.linalg.norm(chroma(colour)[1]) >= PHOTO_MIN_CHROMA:
@@ -111,28 +120,40 @@ def roof_targets(surface, table, use_photo=False):
 
 def recolour(art, ids, kind, kept, surface, targets):
     """Scale each strongly off-colour roof, channel by channel, so its median becomes the tagged
-    colour. Relative shading and texture stay the model's; only the roof's own pixels change."""
+    colour. Relative shading and texture stay the model's; only roof pixels change.
+
+    Roof parts are grouped by target colour and joined where they touch, so a roof mapped as many
+    small building:parts (St. Marien has ~300) is corrected as one surface with one gain."""
     out = art.copy()
     _, c = chroma(art)
     records = []
     roofs = (kind == 1) & ~kept
+    by_colour = {}
     for b in np.unique(ids[roofs]):
-        if b not in targets:
-            continue
-        mask = ndi.binary_erosion(roofs & (ids == b), iterations=1)
-        if mask.sum() < RECOLOUR_MIN_PX:
-            continue
-        target, evidence = targets[b]
-        before = np.median(art[mask].astype(np.float32), 0)
-        delta = float(np.linalg.norm(np.median(c[mask], 0) - chroma(target)[1]))
-        if delta < RECOLOUR_DELTA:
-            continue
-        gain = target / np.maximum(before, 1)
-        out[mask] = np.clip(art[mask] * gain + .5, 0, 255).astype(np.uint8)
-        at = surface.attrs[b]
-        records.append({'building': int(b), 'osm': at['osm'], 'name': at['name'], 'evidence': evidence,
-                        'target_rgb': [round(float(v)) for v in target], 'painted_median_rgb': [round(float(v)) for v in before],
-                        'chroma_delta': round(delta, 1), 'pixels': int(mask.sum())})
+        if b in targets:
+            target, evidence = targets[b]
+            by_colour.setdefault((tuple(np.round(target).astype(int)), evidence), []).append(b)
+    for (target, evidence), members in sorted(by_colour.items()):
+        group = roofs & np.isin(ids, members)
+        lab, n = ndi.label(ndi.binary_closing(group, iterations=1) & roofs)
+        for k, sl in enumerate(ndi.find_objects(lab), 1):
+            region = (lab[sl] == k) & group[sl]
+            mask = np.zeros(group.shape, bool); mask[sl] = region
+            mask = ndi.binary_erosion(mask, iterations=1)
+            if mask.sum() < RECOLOUR_MIN_PX:
+                continue
+            goal = np.asarray(target, np.float32)
+            before = np.median(art[mask].astype(np.float32), 0)
+            delta = float(np.linalg.norm(np.median(c[mask], 0) - chroma(goal)[1]))
+            if delta < RECOLOUR_DELTA:
+                continue
+            gain = goal / np.maximum(before, 1)
+            out[mask] = np.clip(art[mask] * gain + .5, 0, 255).astype(np.uint8)
+            parts = sorted({int(b) for b in np.unique(ids[mask])})
+            named = next((surface.attrs[b]['name'] for b in parts if surface.attrs[b] and surface.attrs[b]['name']), None)
+            records.append({'buildings': parts[:20], 'parts': len(parts), 'osm': surface.attrs[parts[0]]['osm'], 'name': named,
+                            'evidence': evidence, 'target_rgb': [int(v) for v in target], 'painted_median_rgb': [round(float(v)) for v in before],
+                            'chroma_delta': round(delta, 1), 'pixels': int(mask.sum())})
     return out, records
 
 
@@ -323,7 +344,7 @@ def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, 
         return {**plan, 'stored': len(store.tiles), 'to_paint': 0}
 
 
-def recolour_stored(city, surface, osm, store_dir, log=lambda line: print(line, flush=True)):
+def recolour_stored(city, surface, osm, store_dir, redo=False, log=lambda line: print(line, flush=True)):
     """Apply the roof correction to stored tiles painted before it existed. Each tile's source is
     re-rendered and must match its stored hash, so the building masks are those of its own pixels."""
     store_dir = Path(store_dir).resolve()
@@ -333,7 +354,7 @@ def recolour_stored(city, surface, osm, store_dir, log=lambda line: print(line, 
         table = surf.building_table(); targets = roof_targets(surf, table)
         done = []
         for t in store.tiles:
-            if 'recolour' in t:
+            if 'recolour' in t and not redo:
                 continue
             folder, m = store.folder / 'tiles' / t['key'], WATER_MARGIN
             wide, wide_ids, wide_kind = surf.render_tile(table, t['x'] - m, t['y'] - m, WINDOW + 2 * m, WINDOW + 2 * m, buildings=True)
@@ -343,8 +364,13 @@ def recolour_stored(city, surface, osm, store_dir, log=lambda line: print(line, 
                 raise ValueError(f"Tile {t['key']} source no longer reproduces; refusing to recolour")
             (folder / 'source-check.png').unlink()
             kept = keep_water(wide)[m:m + WINDOW, m:m + WINDOW]
-            art = np.asarray(Image.open(folder / 'art.png').convert('RGB'))
-            Image.fromarray(art).save(folder / 'art_raw.png')
+            if redo and (folder / 'art_raw.png').exists():
+                if digest(folder / 'art_raw.png') != t.get('art_raw_sha256', digest(folder / 'art_raw.png')):
+                    raise ValueError(f"Tile {t['key']} raw art changed; refusing to recolour")
+                art = np.asarray(Image.open(folder / 'art_raw.png').convert('RGB'))
+            else:
+                art = np.asarray(Image.open(folder / 'art.png').convert('RGB'))
+                Image.fromarray(art).save(folder / 'art_raw.png')
             fixed, records = recolour(art, wide_ids[m:m + WINDOW, m:m + WINDOW], wide_kind[m:m + WINDOW, m:m + WINDOW], kept, surf, targets)
             Image.fromarray(fixed).save(folder / 'art.png')
             t.update(art_raw_sha256=digest(folder / 'art_raw.png'), art_sha256=digest(folder / 'art.png'), recolour=records,
@@ -386,6 +412,8 @@ def main(argv=None):
             p.add_argument('--caption-file', type=Path, required=True); p.add_argument('--preset', type=Path)
             p.add_argument('--tries', type=int, default=3); p.add_argument('--backend', choices=['auto', 'imagine', 'mflux'], default='auto')
             p.add_argument('--plan-only', action='store_true')
+        elif name == 'recolour':
+            p.add_argument('--redo', action='store_true', help='Recolour again from each tile\'s stored raw art')
         elif name == 'export':
             p.add_argument('--out', type=Path, required=True)
     a = ap.parse_args(argv)
@@ -397,7 +425,7 @@ def main(argv=None):
             result = paint(city, a.surface, a.osm, a.store, a.caption_file.read_text().strip(), preset_path=a.preset,
                            tries=a.tries, backend=a.backend, plan_only=a.plan_only)
         elif a.action == 'recolour':
-            result = recolour_stored(city, a.surface, a.osm, a.store)
+            result = recolour_stored(city, a.surface, a.osm, a.store, redo=a.redo)
         else:
             result = export(city, a.surface, a.osm, a.store, a.out)
         print(json.dumps(result, indent=2))
