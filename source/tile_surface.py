@@ -26,6 +26,7 @@ import surface_patch as sp
 
 NIR_WATER = 60      # DOP near-infrared below this is open water
 SHORE = 30.0        # metres: NIR water only counts this close to mapped OSM water, so inland shadows stay land
+MAX_CELLS = 400_000_000   # whole-surface layers (~25 bytes per cell) still fit a 32 GB Mac; tiles stay small
 MARGIN = 96   # cells around a tile's core: hole fill 40 + gaussian(6) radius 24 + closing/box/gradient chains
 HOLE = 40     # canopy holes up to this many cells across are filled; larger openings stay open
 SCREEN = 2    # pixels rendered around each tile so depth-edge outlines see their neighbours
@@ -120,7 +121,7 @@ class Surface:
     """Whole-surface inputs: heights, orthophoto, rasterised OSM classes and footprints, camera."""
 
     def __init__(self, city, surface, osm, grid=None):
-        self.spec = spec = sp.validate(city['surface'])
+        self.spec = spec = sp.validate(city['surface'], MAX_CELLS)
         if spec.get('landmarks'):
             raise ValueError('Tiled rendering does not support landmark overlays')
         self.city, self.paths = city, {'surface': str(surface), 'osm': str(osm), 'grid': str(grid) if grid else None}

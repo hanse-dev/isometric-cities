@@ -398,7 +398,7 @@ def pixel_matrix(camera, *, scale=None):
              s * (se * (sb * east + cb * north) + ce * camera['z0_m'] - y0)]]
 
 
-def validate(spec):
+def validate(spec, max_cells=64_000_000):
     if not isinstance(spec, dict):
         raise ValueError('City needs a surface source recipe; see docs/sources.md')
     res = spec['resolution_m']
@@ -410,8 +410,8 @@ def validate(spec):
     for extent in (b[2]-b[0], b[3]-b[1]):
         if abs(extent/res-round(extent/res)) > 1e-6:
             raise ValueError('Surface bounds must align to its resolution')
-    if round((b[2]-b[0])/res)*round((b[3]-b[1])/res)>64_000_000:
-        raise ValueError('Surface exceeds 64M cells')
+    if round((b[2]-b[0])/res)*round((b[3]-b[1])/res)>max_cells:
+        raise ValueError(f'Surface exceeds {max_cells // 1_000_000}M cells')
     c = spec['camera']
     if not (0<c['elevation_deg']<90) or not math.isfinite(c['bearing_deg']):
         raise ValueError('Camera needs finite bearing and elevation strictly between 0 and 90')
