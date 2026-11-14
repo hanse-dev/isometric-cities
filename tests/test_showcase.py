@@ -82,6 +82,10 @@ class Showcase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'metres_per_level'):
             showcase.export(self.image, self.source, self.metadata, self.folder/'bad2', depth=depth)
 
+    def test_viewer_never_assigns_read_only_dom_properties(self):
+        # Safari throws in strict mode on these; the depth effect then switched itself off.
+        self.assertNotRegex(showcase.HTML, r'\.dataset\s*=[^=]')
+
     def test_default_demo_selects_a_new_edition_without_overwriting_previous_art(self):
         examples=self.folder/'examples';examples.mkdir()
         for city in ('dc','edinburgh'):
