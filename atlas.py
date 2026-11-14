@@ -23,6 +23,7 @@ COMMANDS = {
     'paint': ('context_infill', 'main', 'Grow a map with neighbouring local image edits'),
     'tilesource': ('tile_surface', 'main', 'Render a measured surface source in pixel-exact tiles'),
     'tiles': ('tile_paint', 'main', 'Paint or export a growing store of fixed map tiles'),
+    'bundle': ('bundle', 'main', 'Write a map bundle for apps: tiles, hit map, buildings, streets, camera'),
     'finish': ('material_finish', 'main', 'Apply source-reviewed colour corrections'),
     'showcase': ('showcase', 'main', 'Export an offline explorer and Deep Zoom tiles'),
     'film': ('media', 'main', 'Export a quiet map fly-through'),
