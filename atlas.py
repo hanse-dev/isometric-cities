@@ -21,6 +21,8 @@ COMMANDS = {
     'photo': ('photographic_patch', 'main', 'Capture aerial colour, terrain and building geometry'),
     'surface': ('surface_patch', 'main', 'Render a measured DSM/DTM surface'),
     'paint': ('context_infill', 'main', 'Grow a map with neighbouring local image edits'),
+    'tilesource': ('tile_surface', 'main', 'Render a measured surface source in pixel-exact tiles'),
+    'tiles': ('tile_paint', 'main', 'Paint or export a growing store of fixed map tiles'),
     'finish': ('material_finish', 'main', 'Apply source-reviewed colour corrections'),
     'showcase': ('showcase', 'main', 'Export an offline explorer and Deep Zoom tiles'),
     'film': ('media', 'main', 'Export a quiet map fly-through'),
