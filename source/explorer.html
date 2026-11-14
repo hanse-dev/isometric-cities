@@ -66,7 +66,7 @@ function refreshTiles(now=performance.now()){
     for(let row=r0;row<=r1;row++)for(let col=c0;col<=c1;col++){
       const key=`${level}/${col}_${row}`,left=Math.max(0,col*tile-pad),top=Math.max(0,row*tile-pad),right=Math.min(size.width,(col+1)*tile+pad),bottom=Math.min(size.height,(row+1)*tile+pad);
       needed.add(key);let image=cache.get(key);
-      if(!image){image=document.createElement('img');image.alt='';image.draggable=false;image.decoding='async';image.style.cssText=`left:${left*sx}px;top:${top*sy}px;width:${(right-left)*sx}px;height:${(bottom-top)*sy}px`;image.src=`${layer?'source_files':'map_files'}/${key}.png`;worlds[layer].appendChild(image);cache.set(key,image)}
+      if(!image){image=document.createElement('img');image.alt='';image.draggable=false;image.decoding='async';image.style.cssText=`left:${left*sx}px;top:${top*sy}px;width:${(right-left)*sx}px;height:${(bottom-top)*sy}px`;if(!layer)image.onload=()=>{if(depth.on)depth.frame()};image.src=`${layer?'source_files':'map_files'}/${key}.png`;worlds[layer].appendChild(image);cache.set(key,image)}
       image.dataset.seen=String(now);
     }
     for(const [key,image] of cache){if(!needed.has(key)&&now-Number(image.dataset.seen)>1000){image.remove();cache.delete(key)}}
@@ -97,12 +97,15 @@ const depth={on:false,gl:null,tilt:[0,0],goal:[0,0],tex:new Map(),loading:new Ma
     const canvas=$('depth-canvas'),gl=canvas.getContext&&canvas.getContext('webgl',{premultipliedAlpha:false,antialias:false});
     if(!gl)return false;
     const shader=(type,src)=>{const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);return sh};
-    const program=(vs,fs)=>{const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,vs));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);return p};
+    const program=(vs,fs)=>{const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,vs));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);return gl.getProgramParameter(p,gl.LINK_STATUS)?p:null};
     const quadVS='attribute vec2 p;attribute vec2 t;varying vec2 v;void main(){v=t;gl_Position=vec4(p,0.,1.);}';
     this.copy=program(quadVS,'precision mediump float;uniform sampler2D img;varying vec2 v;void main(){gl_FragColor=texture2D(img,v);}');
     this.parallax=program(quadVS,`precision highp float;uniform sampler2D art,hgt;uniform vec2 shift;varying vec2 v;
-      void main(){vec2 q=v;for(int i=0;i<10;i++){float h=texture2D(hgt,q).r*255.*${DATA.depth_tiles.metres_per_level||.5};q=v-shift*h;}
+      const float CAP=40.;const int N=16;
+      void main(){vec2 q=v;for(int i=0;i<=N;i++){float hc=CAP*(1.-float(i)/float(N));vec2 c=v-shift*hc;
+        if(min(texture2D(hgt,c).r*255.*${DATA.depth_tiles.metres_per_level||.5},CAP)>=hc){q=c;break;}}
       gl_FragColor=texture2D(art,clamp(q,0.,1.));}`);
+    if(!this.copy||!this.parallax)return false;
     this.buf=gl.createBuffer();this.gl=gl;this.targets=[0,1].map(()=>({tex:gl.createTexture(),fb:gl.createFramebuffer(),w:0,h:0}));
     return true},
   texture(image){const gl=this.gl,t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
@@ -115,7 +118,7 @@ const depth={on:false,gl:null,tilt:[0,0],goal:[0,0],tex:new Map(),loading:new Ma
     gl.bindBuffer(gl.ARRAY_BUFFER,this.buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([x0,y0,u0,v0,x1,y0,u1,v0,x0,y1,u0,v1,x1,y1,u1,v1]),gl.STREAM_DRAW);
     for(const [name,offset] of [['p',0],['t',8]]){const a=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(a);gl.vertexAttribPointer(a,2,gl.FLOAT,false,16,offset)}
     gl.drawArrays(gl.TRIANGLE_STRIP,0,4)},
-  depthImage(key){let image=this.loading.get(key);if(!image){image=new Image();image.decoding='async';image.onload=()=>this.frame();image.src=`depth_files/${key}.png`;this.loading.set(key,image)}return image},
+  depthImage(key){let image=this.loading.get(key);if(!image){image=new Image();image.dataset=image.dataset||{};image.decoding='async';image.onload=()=>this.frame();image.src=`depth_files/${key}.png`;this.loading.set(key,image)}return image},
   frame(){
     if(!this.on||!this.gl)return;const gl=this.gl,canvas=$('depth-canvas'),dpr=devicePixelRatio||1,w=Math.max(1,Math.round(vw*dpr)),h=Math.max(1,Math.round(vh*dpr));
     if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
@@ -125,11 +128,11 @@ const depth={on:false,gl:null,tilt:[0,0],goal:[0,0],tex:new Map(),loading:new Ma
       for(const [i,source] of [[0,'art'],[1,'depth']]){
         const target=this.target(i,w,h);gl.bindFramebuffer(gl.FRAMEBUFFER,target.fb);gl.viewport(0,0,w,h);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(this.copy);
         for(const [key,art] of tileMaps[0]){
-          if(!key.startsWith(level+'/'))continue;const image=source==='art'?art:this.depthImage(key);if(!image.complete||!image.naturalWidth)continue;
+          if(!key.startsWith(level+'/'))continue;const image=source==='art'?art:this.depthImage(key);if(!image.dataset.ready){if(image.complete&&image.naturalWidth&&!image.dataset.decoding){image.dataset.decoding='1';(image.decode?image.decode():Promise.resolve()).then(()=>{image.dataset.ready='1';this.frame()},()=>{delete image.dataset.decoding})}continue}
           const id=source+key;live.add(id);if(!this.tex.has(id))this.tex.set(id,this.texture(image));
           const [col,row]=key.split('/')[1].split('_').map(Number),tile=spec.tile_size,pad=spec.overlap;
           const left=Math.max(0,col*tile-pad),top=Math.max(0,row*tile-pad),right=Math.min(size.width,(col+1)*tile+pad),bottom=Math.min(size.height,(row+1)*tile+pad);
-          gl.bindTexture(gl.TEXTURE_2D,this.tex.get(id));this.quad(this.copy,ndc(left*sx,top*sy,right*sx,bottom*sy).map((v,j)=>j%2?-v:v),[0,0,1,1])}}
+          gl.bindTexture(gl.TEXTURE_2D,this.tex.get(id));this.quad(this.copy,ndc(left*sx,top*sy,right*sx,bottom*sy),[0,0,1,1])}}
     }catch(error){this.fail();return}
     for(const [id,t] of this.tex)if(!live.has(id)){gl.deleteTexture(t);this.tex.delete(id)}
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,w,h);gl.useProgram(this.parallax);
@@ -141,7 +144,7 @@ const depth={on:false,gl:null,tilt:[0,0],goal:[0,0],tex:new Map(),loading:new Ma
   aim(gx,gy){this.goal=[clamp(gx,-1,1),clamp(gy,-1,1)];if(this.raf===null)this.raf=requestAnimationFrame(()=>this.animate())},
   fail(){this.failed=true;this.set(false);$('depth').disabled=true;$('pill').textContent='Depth needs the hosted map or a local server';$('pill').classList.add('visible');clearTimeout(pillTimer);pillTimer=setTimeout(()=>$('pill').classList.remove('visible'),2500)},
   set(value){if(value&&(this.failed||(!this.gl&&!this.init()))){this.failed=true;$('depth').disabled=true;return}
-    this.on=value;$('depth').setAttribute('aria-pressed',String(value));$('depth-canvas').hidden=!value;$('art-world').style.visibility=value?'hidden':'';
+    this.on=value;$('depth').setAttribute('aria-pressed',String(value));$('depth-canvas').hidden=!value;
     if(value){this.tilt=[0,0];this.aim(.5,-.5)}this.frame()}};
 if(depth.supported()){$('depth').hidden=false;$('depth').onclick=()=>{stop();depth.set(!depth.on)}}
 function setCompare(value){stop();closePlaces();compare=value;$('source').setAttribute('aria-pressed',String(value));$('source-clip').hidden=!value;$('divider').hidden=!value;setReveal(reveal);refreshTiles()}
