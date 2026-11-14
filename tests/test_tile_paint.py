@@ -40,6 +40,15 @@ class Painter:
         return out
 
 
+class Yellow(Painter):
+    """Paints every roof warm ochre, like the model sometimes does."""
+    def __call__(self, input_path, folder, seed):
+        out = super().__call__(input_path, folder, seed)
+        a = np.asarray(Image.open(out)).astype(int); a[..., 0] += 40; a[..., 1] += 25; a[..., 2] -= 30
+        Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).save(out)
+        return out
+
+
 class TilePaint(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.folder = Path(self.tmp.name); scene(self.folder, 640)
@@ -100,6 +109,43 @@ class TilePaint(unittest.TestCase):
         finally:
             os.chdir(cwd)
         self.assertTrue(seen and all(a and b for a, b in seen))
+
+    def test_off_colour_tagged_roofs_are_recoloured_now_or_later(self):
+        c = city((-300., 200.))
+        self.run_paint(c, Yellow(), store='now')
+        tile = json.loads((self.folder / 'now/store.json').read_text())['tiles'][0]
+        fixed = [r for r in tile['recolour'] if r['evidence'] == 'osm-tag']
+        self.assertTrue(fixed and all(r['target_rgb'] == [0x33, 0x55, 0x77] for r in fixed))
+        raw = np.asarray(Image.open(self.folder / 'now/tiles/0_0/art_raw.png')).astype(int)
+        art = np.asarray(Image.open(self.folder / 'now/tiles/0_0/art.png')).astype(int)
+        changed = np.any(raw != art, axis=2)
+        self.assertTrue(changed.any())
+        target = np.array([0x33, 0x55, 0x77])
+        self.assertLess(np.abs(np.median(art[changed], 0) - target).max(), 12)   # roofs now match their tag
+        # the same correction applied after storing gives the same tile
+        self.run_paint(c, Yellow(), store='later', recolour_roofs=False)
+        self.assertEqual(json.loads((self.folder / 'later/store.json').read_text())['tiles'][0]['recolour'], [])
+        later = json.loads((self.folder / 'later/store.json').read_text())
+        for t in later['tiles']: t.pop('recolour')
+        (self.folder / 'later/store.json').write_text(json.dumps(later))
+        tp.recolour_stored(c, self.npz, self.osm, self.folder / 'later', log=lambda *_: None)
+        self.assertEqual(json.loads((self.folder / 'later/store.json').read_text())['tiles'][0]['art_sha256'], tile['art_sha256'])
+
+    def test_recolour_uses_one_gain_per_roof_and_spares_walls_and_water(self):
+        class Fake: attrs = [None, {'osm': 'way/1', 'name': 'Kirche'}]
+        rng = np.random.default_rng(1)
+        art = np.clip(np.full((60, 60, 3), (200, 190, 170)) + rng.normal(0, 12, (60, 60, 1)), 0, 255).astype(np.uint8)
+        ids = np.zeros((60, 60), np.int32); ids[10:50, 10:50] = 1
+        kind = np.where(ids > 0, 1, 0).astype(np.uint8); kind[40:50, 10:50] = 2          # bottom rows are wall
+        kept = np.zeros((60, 60), bool); kept[10:20, 10:20] = True                       # kept water inside the roof
+        out, rec = tp.recolour(art, ids, kind, kept, Fake(), {1: (np.array([112., 164., 142.]), 'osm-tag')})
+        self.assertEqual(len(rec), 1)
+        changed = np.any(out != art, axis=2)
+        self.assertFalse(changed[40:50].any() or changed[10:20, 10:20].any() or changed[:10].any())
+        sel = changed
+        ratio = out[sel].astype(float) / art[sel]
+        self.assertLess(ratio.std(0).max(), .02)
+        self.assertLess(np.abs(np.median(out[sel], 0) - [112, 164, 142]).max(), 3)
 
     def test_frame_must_stay_on_the_store_lattice(self):
         self.run_paint(city((-300., 200.)), Painter(), store='s')

@@ -73,6 +73,69 @@ def sharpness(image, mask):
     return float(np.abs(ndi.laplace(image.astype(np.float32).mean(-1)))[mask].mean())
 
 
+# ---------- roof colour ----------
+RECOLOUR_DELTA = 30       # minimum chroma distance (YCbCr, 0..255 scale) before a roof is corrected
+RECOLOUR_MIN_PX = 150     # visible roof pixels needed, after a 1-pixel inset from the roof edge
+PHOTO_MIN_CHROMA = 30     # an orthophoto colour must be this clearly coloured to count as evidence
+
+
+def chroma(rgb):
+    rgb = np.asarray(rgb, np.float32)
+    y = rgb[..., 0] * .299 + rgb[..., 1] * .587 + rgb[..., 2] * .114
+    return y, np.stack([rgb[..., 2] - y, rgb[..., 0] - y], -1)
+
+
+def from_chroma(y, cbcr):
+    b, r = cbcr[..., 0] + y, cbcr[..., 1] + y
+    g = (y - .299 * r - .114 * b) / .587
+    return np.clip(np.stack([r, g, b], -1) + .5, 0, 255).astype(np.uint8)
+
+
+def roof_targets(surface, table, use_photo=False):
+    """Building id -> (target colour, evidence) where the roof colour is tagged in OSM.
+
+    Orthophoto medians mix roof, shadow, dormers and glare; in Lübeck they recoloured ordinary roofs
+    lavender and teal, so they only count as evidence when use_photo is set."""
+    targets = {}
+    for k, at in enumerate(surface.attrs):
+        if at is None:
+            continue
+        if at['roof'] is not None:
+            targets[k] = (np.asarray(at['roof'], np.float32), 'osm-tag')
+        elif use_photo and table['has_roof'][k]:
+            colour = table['roofc'][k]
+            if np.linalg.norm(chroma(colour)[1]) >= PHOTO_MIN_CHROMA:
+                targets[k] = (colour, 'orthophoto-median')
+    return targets
+
+
+def recolour(art, ids, kind, kept, surface, targets):
+    """Scale each strongly off-colour roof, channel by channel, so its median becomes the tagged
+    colour. Relative shading and texture stay the model's; only the roof's own pixels change."""
+    out = art.copy()
+    _, c = chroma(art)
+    records = []
+    roofs = (kind == 1) & ~kept
+    for b in np.unique(ids[roofs]):
+        if b not in targets:
+            continue
+        mask = ndi.binary_erosion(roofs & (ids == b), iterations=1)
+        if mask.sum() < RECOLOUR_MIN_PX:
+            continue
+        target, evidence = targets[b]
+        before = np.median(art[mask].astype(np.float32), 0)
+        delta = float(np.linalg.norm(np.median(c[mask], 0) - chroma(target)[1]))
+        if delta < RECOLOUR_DELTA:
+            continue
+        gain = target / np.maximum(before, 1)
+        out[mask] = np.clip(art[mask] * gain + .5, 0, 255).astype(np.uint8)
+        at = surface.attrs[b]
+        records.append({'building': int(b), 'osm': at['osm'], 'name': at['name'], 'evidence': evidence,
+                        'target_rgb': [round(float(v)) for v in target], 'painted_median_rgb': [round(float(v)) for v in before],
+                        'chroma_delta': round(delta, 1), 'pixels': int(mask.sum())})
+    return out, records
+
+
 # ---------- store ----------
 class Store:
     def __init__(self, folder, identity):
@@ -191,7 +254,8 @@ def anchored(city, anchor):
     return city
 
 
-def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, backend='auto', plan_only=False, painter=None, log=print):
+def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, backend='auto', plan_only=False, painter=None,
+          recolour_roofs=True, log=lambda line: print(line, flush=True)):
     preset_path = Path(preset_path or style.DEFAULT_PRESET).resolve()
     preset = json.loads(preset_path.read_text())
     cam = city['surface']['camera']
@@ -214,14 +278,16 @@ def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, 
         log(json.dumps(plan))
         surf = ts.Surface(anchored(city, anchor), surface, osm)
         table = surf.building_table()
+        targets = roof_targets(surf, table) if recolour_roofs else {}
         painter = painter or model_painter(caption, preset_path, backend)
         for i, j in todo:
             key, x, y = key_of(i, j), i * STRIDE, j * STRIDE
             folder = store.folder / 'tiles' / key
             folder.mkdir(parents=True, exist_ok=True)
             m = WATER_MARGIN
-            wide = surf.render_tile(table, x - m, y - m, WINDOW + 2 * m, WINDOW + 2 * m)
+            wide, wide_ids, wide_kind = surf.render_tile(table, x - m, y - m, WINDOW + 2 * m, WINDOW + 2 * m, buildings=True)
             source = np.ascontiguousarray(wide[m:m + WINDOW, m:m + WINDOW])
+            ids, kind = wide_ids[m:m + WINDOW, m:m + WINDOW], wide_kind[m:m + WINDOW, m:m + WINDOW]
             kept = keep_water(wide)[m:m + WINDOW, m:m + WINDOW]
             Image.fromarray(source).save(folder / 'source.png')
             inp = compose(store, source, x, y)
@@ -245,13 +311,47 @@ def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, 
                 write(folder / 'rejected.json', {'tile': key, 'tries': [r for r, _ in results]})
                 raise ValueError(f'Every try for tile {key} failed the water check; inspect {folder} before continuing')
             best, art = max(good, key=lambda r: r[0]['sharpness'])
+            Image.fromarray(art).save(folder / 'art_raw.png')
+            art, recoloured = recolour(art, ids, kind, kept, surf, targets)
             Image.fromarray(art).save(folder / 'art.png')
             store.add({'key': key, 'i': i, 'j': j, 'x': x, 'y': y, 'art': f'tiles/{key}/art.png', 'art_sha256': digest(folder / 'art.png'),
                        'source_sha256': digest(folder / 'source.png'), 'input_sha256': digest(folder / 'input.png'),
                        'kept_px': int(kept.sum()), 'input_sharpness': round(base, 2), 'chosen': best['attempt'],
-                       'tries': [r for r, _ in results], 'visual_acceptance': 'unreviewed'})
-            log(json.dumps({'tile': key, 'chosen': best['attempt'], 'sharpness': best['sharpness'], 'stored': len(store.tiles)}))
+                       'tries': [r for r, _ in results], 'art_raw_sha256': digest(folder / 'art_raw.png'),
+                       'recolour': recoloured, 'visual_acceptance': 'unreviewed'})
+            log(json.dumps({'tile': key, 'chosen': best['attempt'], 'sharpness': best['sharpness'], 'recoloured': len(recoloured), 'stored': len(store.tiles)}))
         return {**plan, 'stored': len(store.tiles), 'to_paint': 0}
+
+
+def recolour_stored(city, surface, osm, store_dir, log=lambda line: print(line, flush=True)):
+    """Apply the roof correction to stored tiles painted before it existed. Each tile's source is
+    re-rendered and must match its stored hash, so the building masks are those of its own pixels."""
+    store_dir = Path(store_dir).resolve()
+    with ownership(store_dir):
+        store = Store(store_dir, read(store_dir / 'store.json')['identity'])
+        surf = ts.Surface(anchored(city, store.identity['anchor']), surface, osm)
+        table = surf.building_table(); targets = roof_targets(surf, table)
+        done = []
+        for t in store.tiles:
+            if 'recolour' in t:
+                continue
+            folder, m = store.folder / 'tiles' / t['key'], WATER_MARGIN
+            wide, wide_ids, wide_kind = surf.render_tile(table, t['x'] - m, t['y'] - m, WINDOW + 2 * m, WINDOW + 2 * m, buildings=True)
+            source = np.ascontiguousarray(wide[m:m + WINDOW, m:m + WINDOW])
+            Image.fromarray(source).save(folder / 'source-check.png')
+            if digest(folder / 'source-check.png') != t['source_sha256']:
+                raise ValueError(f"Tile {t['key']} source no longer reproduces; refusing to recolour")
+            (folder / 'source-check.png').unlink()
+            kept = keep_water(wide)[m:m + WINDOW, m:m + WINDOW]
+            art = np.asarray(Image.open(folder / 'art.png').convert('RGB'))
+            Image.fromarray(art).save(folder / 'art_raw.png')
+            fixed, records = recolour(art, wide_ids[m:m + WINDOW, m:m + WINDOW], wide_kind[m:m + WINDOW, m:m + WINDOW], kept, surf, targets)
+            Image.fromarray(fixed).save(folder / 'art.png')
+            t.update(art_raw_sha256=digest(folder / 'art_raw.png'), art_sha256=digest(folder / 'art.png'), recolour=records,
+                     recolour_after_store=True)
+            write(store.path, {'identity': store.identity, 'tiles': store.tiles})
+            done.append(t['key']); log(json.dumps({'tile': t['key'], 'recoloured': len(records)}))
+        return {'recoloured_tiles': done}
 
 
 def export(city, surface, osm, store_dir, out):
@@ -277,7 +377,7 @@ def export(city, surface, osm, store_dir, out):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='action', required=True)
-    for name in ('paint', 'export'):
+    for name in ('paint', 'export', 'recolour'):
         p = sub.add_parser(name)
         p.add_argument('--city', required=True); p.add_argument('--surface', type=Path, required=True)
         p.add_argument('--osm', type=Path, required=True); p.add_argument('--store', type=Path, required=True)
@@ -285,7 +385,7 @@ def main(argv=None):
             p.add_argument('--caption-file', type=Path, required=True); p.add_argument('--preset', type=Path)
             p.add_argument('--tries', type=int, default=3); p.add_argument('--backend', choices=['auto', 'imagine', 'mflux'], default='auto')
             p.add_argument('--plan-only', action='store_true')
-        else:
+        elif name == 'export':
             p.add_argument('--out', type=Path, required=True)
     a = ap.parse_args(argv)
     try:
@@ -295,6 +395,8 @@ def main(argv=None):
                 raise ValueError('Use 1..5 tries per tile')
             result = paint(city, a.surface, a.osm, a.store, a.caption_file.read_text().strip(), preset_path=a.preset,
                            tries=a.tries, backend=a.backend, plan_only=a.plan_only)
+        elif a.action == 'recolour':
+            result = recolour_stored(city, a.surface, a.osm, a.store)
         else:
             result = export(city, a.surface, a.osm, a.store, a.out)
         print(json.dumps(result, indent=2))

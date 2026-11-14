@@ -105,3 +105,25 @@ class TileSurface(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TileBuildings(unittest.TestCase):
+    def test_building_ids_join_exactly_and_leave_the_image_unchanged(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder, 640)
+            surf = ts.Surface(city(640), folder / 'surface.npz', folder / 'osm.json')
+            table = surf.building_table()
+            img, ids, kind = surf.render_tile(table, 0, 0, surf.width, surf.height, buildings=True)
+            np.testing.assert_array_equal(img, surf.render_tile(table, 0, 0, surf.width, surf.height))
+            self.assertTrue((kind == 1).any() and (kind == 2).any())
+            self.assertTrue(((ids > 0) == (kind > 0)).all())
+            tiled_ids, tiled_kind = np.zeros_like(ids), np.zeros_like(kind)
+            for y0 in range(0, surf.height, 150):
+                for x0 in range(0, surf.width, 150):
+                    w, h = min(150, surf.width - x0), min(150, surf.height - y0)
+                    _, a, b = surf.render_tile(table, x0, y0, w, h, buildings=True)
+                    tiled_ids[y0:y0 + h, x0:x0 + w], tiled_kind[y0:y0 + h, x0:x0 + w] = a, b
+            np.testing.assert_array_equal(tiled_ids, ids); np.testing.assert_array_equal(tiled_kind, kind)
+            # tagged roofs (#335577) are visible as roof pixels of their own building ids
+            tagged = [k for k, a in enumerate(surf.attrs) if a and a['roof'] == (0x33, 0x55, 0x77)]
+            self.assertGreater(np.isin(ids, tagged)[kind == 1].sum(), 50)

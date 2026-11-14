@@ -68,8 +68,11 @@ def fill_small_holes(mask, size):
 
 
 @njit
-def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy):
-    """surface_patch.raster in global pixel coordinates, writing only the window at (ox, oy)."""
+def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy, lab, ids, kind):
+    """surface_patch.raster in global pixel coordinates, writing only the window at (ox, oy).
+
+    ids/kind record, per pixel, the building id of the visible surface and whether it is a
+    roof (1) or a wall (2); 0 where no building is visible."""
     Hh, Wd = zb.shape
     ny, nx = X.shape
     for i in range(ny - 1):
@@ -99,6 +102,9 @@ def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy):
                         d = wa * D[a0, a1] + wb * D[b0, b1] + wc * D[c0, c1]
                         if d < zb[py - oy, px - ox]:
                             zb[py - oy, px - ox] = d
+                            b = lab[hi0, hi1]
+                            ids[py - oy, px - ox] = b
+                            kind[py - oy, px - ox] = 0 if b == 0 else (2 if steep else 1)
                             if steep:
                                 for k in range(3): out[py - oy, px - ox, k] = min(255.0, walla[hi0, hi1, k] * wshade[i, j] * opn[hi0, hi1])
                             else:
@@ -230,7 +236,7 @@ class Surface:
         r0 = max(int(math.floor((self.N - max(ns)) / res)) - 2, 0); r1 = min(int(math.ceil((self.N - min(ns)) / res)) + 3, ny)
         return r0, r1, c0, c1
 
-    def render_tile(self, table, x0, y0, w, h, variant='edges'):
+    def render_tile(self, table, x0, y0, w, h, variant='edges', buildings=False):
         P, G, res, s = self.P, self.G, self.res, self.s
         r0, r1, c0, c1 = self.cells_for(x0, y0, w, h)
         ny, nx = self.dsm.shape
@@ -281,15 +287,20 @@ class Surface:
         k = (slice(r0 - R0, r1 - R0), slice(c0 - C0, c1 - C0))
         Wd, Hh = w + 2 * SCREEN, h + 2 * SCREEN
         img = np.zeros((Hh, Wd, 3), np.uint8); img[:] = (150, 150, 150); zb = np.full((Hh, Wd), 1e18)
+        ids = np.zeros((Hh, Wd), np.int32); kind = np.zeros((Hh, Wd), np.uint8)
         raster_window(np.ascontiguousarray(X[k]), np.ascontiguousarray(Y[k]), np.ascontiguousarray(D[k]),
                       np.ascontiguousarray(H[k]), np.ascontiguousarray(walla[k].astype(np.float32)),
                       np.ascontiguousarray(wshade[k]), np.ascontiguousarray(open_[k].astype(np.float32)),
-                      np.ascontiguousarray(colr[k]), np.ascontiguousarray(nzs[k]), img, zb, x0 - SCREEN, y0 - SCREEN)
+                      np.ascontiguousarray(colr[k]), np.ascontiguousarray(nzs[k]), img, zb, x0 - SCREEN, y0 - SCREEN,
+                      np.ascontiguousarray(lab[k].astype(np.int32)), ids, kind)
         if variant == 'edges':
             dz = np.maximum(np.abs(np.diff(zb, axis=0, prepend=zb[:1])), np.abs(np.diff(zb, axis=1, prepend=zb[:, :1])))
             edge = dz > 2.5
             img[edge] = (img[edge] * .62).astype(np.uint8)
-        return img[SCREEN:SCREEN + h, SCREEN:SCREEN + w]
+        crop = (slice(SCREEN, SCREEN + h), slice(SCREEN, SCREEN + w))
+        if buildings:
+            return img[crop], ids[crop], kind[crop]
+        return img[crop]
 
     def metadata(self, image_path, tile, table_sha):
         cam = self.spec['camera']
