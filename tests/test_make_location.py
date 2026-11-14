@@ -253,6 +253,11 @@ class LocationWorkflow(unittest.TestCase):
         self.assertIn('flux2-klein-4b', argv)
         self.assertIn('--lora-paths', argv)
         self.assertNotIn('flux3', str(argv))
+        with_photo = dict(source, references=[{'image': '/tmp/photo.jpg', 'sha256': 'x'}])
+        paths = style.native_argv(with_photo, self.folder, 'caption', preset, '/base', '/adapter', .65)
+        i = paths.index('--image-paths')
+        self.assertEqual(paths[i + 1:i + 3], ['/tmp/fixture.png', '/tmp/photo.jpg'])
+        self.assertEqual(paths[i + 3], '--output')
 
     def test_native_launch_resume_and_visual_review_are_separate(self):
         original, _ = self.image(512, 512)

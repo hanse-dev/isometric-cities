@@ -287,7 +287,8 @@ def native_argv(source, out, caption, preset, base, adapter, scale):
     if model_type not in ('flux2-klein-4b', 'flux2-klein-base-4b', 'flux2-klein-9b', 'flux2-klein-base-9b'):
         raise ValueError('Unsupported FLUX.2 Klein model type in preset')
     return ['mflux-generate-flux2-edit', '--model', base, '--base-model', model_type,
-            '--prompt', caption, '--image-paths', source['image'], '--output', str(Path(out) / 'art/raw.png'),
+            '--prompt', caption, '--image-paths', source['image'], *[r['image'] for r in source.get('references', [])],
+            '--output', str(Path(out) / 'art/raw.png'),
             '--width', str(width), '--height', str(height), '--steps', str(settings['steps']),
             '--guidance', str(settings['guidance']), '--seed', str(settings['seed']),
             '--lora-paths', adapter, '--lora-scales', str(scale)]
@@ -405,6 +406,9 @@ def native_worker(path):
         plan = receipt['style_plan']
         if digest(receipt['source']['image']) != plan['source_sha256']:
             raise ValueError('Native source changed before inference')
+        for reference in receipt['source'].get('references', []):     # extra reference images, e.g. a photo
+            if digest(reference['image']) != reference['sha256']:
+                raise ValueError('A reference image changed before inference')
         base, adapter = model_paths(plan['preset'])
         expected_argv = native_argv(receipt['source'], path.parent, plan['caption'], plan['preset'], base, adapter, plan['scale'])
         if plan['native_argv'] != expected_argv:
@@ -440,6 +444,8 @@ def completed_art(receipt):
             raise ValueError('Completed art changed; its review no longer applies')
     if digest(receipt['source']['image']) != receipt['source']['sha256']:
         raise ValueError('Prepared source changed; its review no longer applies')
+    if any(digest(r['image']) != r['sha256'] for r in receipt['source'].get('references', [])):
+        raise ValueError('A reference image changed; its review no longer applies')
     return True
 
 
