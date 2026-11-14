@@ -24,6 +24,8 @@ from scipy import ndimage as ndi
 
 import surface_patch as sp
 
+NIR_WATER = 60      # DOP near-infrared below this is open water
+SHORE = 30.0        # metres: NIR water only counts this close to mapped OSM water, so inland shadows stay land
 MARGIN = 96   # cells around a tile's core: hole fill 40 + gaussian(6) radius 24 + closing/box/gradient chains
 HOLE = 40     # canopy holes up to this many cells across are filled; larger openings stay open
 SCREEN = 2    # pixels rendered around each tile so depth-edge outlines see their neighbours
@@ -138,6 +140,10 @@ class Surface:
         self.P = {**sp.DEFAULT_PALETTE, **spec.get('palette', {})}
         feats = sp.load_osm(osm, sp.transformer(spec, grid), self.W, self.N, self.res, self.P)
         self.ground, self.bid, self.attrs, self.G = sp.raster_layers(feats, self.dsm.shape, self.res, self.P)
+        self.water_evidence = None
+        if 'nir' in L.files:
+            self.ground = self.ground.copy()
+            self.water_evidence = self.measured_water(L['nir'])
         cam = spec['camera']
         self.centre, self.u0, self.y0 = cam['centre_projected_m'], cam['u_range_m'][0], cam['y_range_screen_m'][0]
         self.z0, self.bearing, self.elevation = cam['z0_m'], cam['bearing_deg'], cam['elevation_deg']
@@ -147,6 +153,24 @@ class Surface:
         self.width = round((cam['u_range_m'][1] - cam['u_range_m'][0]) * self.s)
         self.height = round((cam['y_range_screen_m'][1] - cam['y_range_screen_m'][0]) * self.s)
         self.hmin, self.hmax = float(self.dtm.min()), float(self.dsm.max())
+
+    def measured_water(self, nir):
+        """Move OSM shorelines to the orthophoto: water is dark near-infrared within SHORE m of mapped
+        water; mapped water that is bright in NIR (quays, paths, lawns, buildings) becomes land."""
+        if nir.shape != self.dsm.shape:
+            raise ValueError('Orthophoto nir must lie on the DSM/DTM grid')
+        G, mapped = self.G, self.ground == self.G['water']
+        near = ndi.distance_transform_edt(~mapped) * self.res <= SHORE
+        dark = ndi.binary_opening(np.pad(nir < NIR_WATER, 3, mode='edge'), iterations=2)[3:-3, 3:-3]   # no erosion at the data edge
+        lab, _ = ndi.label(dark & near)
+        touching = np.unique(lab[mapped & (lab > 0)])
+        water = np.isin(lab, touching[touching > 0])            # dark areas connected to mapped water
+        water = ndi.binary_fill_holes(ndi.binary_closing(np.pad(water, 3, mode='edge'), iterations=2)[3:-3, 3:-3]) & ~(self.bid > 0)
+        removed, added = mapped & ~water, water & ~mapped
+        self.ground[removed] = G['pavement']
+        self.ground[added] = G['water']
+        return {'nir_threshold': NIR_WATER, 'shore_m': SHORE, 'cells_water_to_land': int(removed.sum()),
+                'cells_land_to_water': int(added.sum()), 'resolution_m': self.res}
 
     # ---- per-cell layers on a crop [r0:r1, c0:c1] of the global grid ----
     def layers(self, r0, r1, c0, c1):
@@ -318,7 +342,8 @@ class Surface:
                                 centre_projected_m=self.centre, u_range_m=cam['u_range_m'], y_range_screen_m=cam['y_range_screen_m'],
                                 z0_m=self.z0),
                     size=[self.width, self.height], palette=self.P, colour_evidence=self.spec['colour_evidence'],
-                    roof_colour_from_orthophoto=self.rgb is not None, attribution=self.spec['attribution'],
+                    roof_colour_from_orthophoto=self.rgb is not None, water_from_orthophoto_nir=self.water_evidence,
+                    attribution=self.spec['attribution'],
                     input_sha256={k: sp.sha(v) if v else None for k, v in self.paths.items()},
                     building_table_sha256=table_sha, city_id=self.city['id'], surface_spec=self.spec,
                     renderer_sha256=sp.sha(__file__), source_sha256=sp.sha(image_path))

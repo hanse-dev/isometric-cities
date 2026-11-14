@@ -152,3 +152,25 @@ class TileDepth(unittest.TestCase):
             with Image.open(folder / 'out/depth.png') as d:
                 self.assertEqual((d.mode, d.size), ('L', (surf.width, surf.height)))
             self.assertEqual(meta['depth']['metres_per_level'], .5)
+
+
+class MeasuredWater(unittest.TestCase):
+    def test_nir_moves_shores_but_keeps_inland_shadows_land(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder, 240)
+            npz = dict(np.load(folder / 'surface.npz'))
+            osm = json.loads((folder / 'osm.json').read_text())
+            m = 111320.0
+            lake = [{'lon': x / m, 'lat': y / m} for x, y in ((-120, -120), (-60, -120), (-60, 120), (-120, 120), (-120, -120))]
+            osm['elements'].append({'type': 'way', 'id': 5000, 'tags': {'natural': 'water'}, 'geometry': lake})
+            (folder / 'osm.json').write_text(json.dumps(osm))
+            nir = np.full((240, 240), 180, np.uint8)
+            nir[:, :50] = 20                           # real water ends 10 m before the mapped shore (x=-60 m -> col 60)
+            nir[100:110, 150:170] = 20                 # dark shadow far inland
+            npz['nir'] = nir; np.savez_compressed(folder / 'surface.npz', **npz)
+            surf = ts.Surface(city(240), folder / 'surface.npz', folder / 'osm.json')
+            water = surf.ground == surf.G['water']
+            self.assertTrue((water | (surf.bid > 0))[:, 5:45].all())  # fixture buildings stand in the lake and stay land
+            self.assertFalse(water[:, 52:60].any())     # mapped water that is bright in NIR became land
+            self.assertFalse(water[100:110, 150:170].any())
+            self.assertGreater(surf.water_evidence['cells_water_to_land'], 0)
