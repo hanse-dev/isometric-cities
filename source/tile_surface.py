@@ -68,11 +68,12 @@ def fill_small_holes(mask, size):
 
 
 @njit
-def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy, lab, ids, kind):
+def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy, lab, ids, kind, Gg, hag):
     """surface_patch.raster in global pixel coordinates, writing only the window at (ox, oy).
 
     ids/kind record, per pixel, the building id of the visible surface and whether it is a
-    roof (1) or a wall (2); 0 where no building is visible."""
+    roof (1) or a wall (2); 0 where no building is visible. hag is the visible surface's height
+    above the measured ground (Hg - Gg interpolated like the depth), for parallax viewing."""
     Hh, Wd = zb.shape
     ny, nx = X.shape
     for i in range(ny - 1):
@@ -105,6 +106,8 @@ def raster_window(X, Y, D, Hg, walla, wshade, opn, colr, nz, out, zb, ox, oy, la
                             b = lab[hi0, hi1]
                             ids[py - oy, px - ox] = b
                             kind[py - oy, px - ox] = 0 if b == 0 else (2 if steep else 1)
+                            hag[py - oy, px - ox] = (wa * (Hg[a0, a1] - Gg[a0, a1]) + wb * (Hg[b0, b1] - Gg[b0, b1])
+                                                     + wc * (Hg[c0, c1] - Gg[c0, c1]))
                             if steep:
                                 for k in range(3): out[py - oy, px - ox, k] = min(255.0, walla[hi0, hi1, k] * wshade[i, j] * opn[hi0, hi1])
                             else:
@@ -287,17 +290,20 @@ class Surface:
         k = (slice(r0 - R0, r1 - R0), slice(c0 - C0, c1 - C0))
         Wd, Hh = w + 2 * SCREEN, h + 2 * SCREEN
         img = np.zeros((Hh, Wd, 3), np.uint8); img[:] = (150, 150, 150); zb = np.full((Hh, Wd), 1e18)
-        ids = np.zeros((Hh, Wd), np.int32); kind = np.zeros((Hh, Wd), np.uint8)
+        ids = np.zeros((Hh, Wd), np.int32); kind = np.zeros((Hh, Wd), np.uint8); hag = np.zeros((Hh, Wd), np.float32)
         raster_window(np.ascontiguousarray(X[k]), np.ascontiguousarray(Y[k]), np.ascontiguousarray(D[k]),
                       np.ascontiguousarray(H[k]), np.ascontiguousarray(walla[k].astype(np.float32)),
                       np.ascontiguousarray(wshade[k]), np.ascontiguousarray(open_[k].astype(np.float32)),
                       np.ascontiguousarray(colr[k]), np.ascontiguousarray(nzs[k]), img, zb, x0 - SCREEN, y0 - SCREEN,
-                      np.ascontiguousarray(lab[k].astype(np.int32)), ids, kind)
+                      np.ascontiguousarray(lab[k].astype(np.int32)), ids, kind,
+                      np.ascontiguousarray(lay['dtm'][k]), hag)
         if variant == 'edges':
             dz = np.maximum(np.abs(np.diff(zb, axis=0, prepend=zb[:1])), np.abs(np.diff(zb, axis=1, prepend=zb[:, :1])))
             edge = dz > 2.5
             img[edge] = (img[edge] * .62).astype(np.uint8)
         crop = (slice(SCREEN, SCREEN + h), slice(SCREEN, SCREEN + w))
+        if buildings == 'all':
+            return img[crop], ids[crop], kind[crop], np.maximum(hag[crop], 0)
         if buildings:
             return img[crop], ids[crop], kind[crop]
         return img[crop]
@@ -325,18 +331,30 @@ def table_digest(table):
     return h.hexdigest()
 
 
-def render(city, surface, osm, out, *, grid=None, tile=1024):
+DEPTH_STEP = 0.5   # metres per depth.png grey level: 0..127.5 m above ground
+
+
+def render(city, surface, osm, out, *, grid=None, tile=1024, depth=False):
     surf = Surface(city, surface, osm, grid)
     table = surf.building_table()
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     image = np.zeros((surf.height, surf.width, 3), np.uint8)
+    height = np.zeros((surf.height, surf.width), np.float32) if depth else None
     for y0 in range(0, surf.height, tile):
         for x0 in range(0, surf.width, tile):
             w, h = min(tile, surf.width - x0), min(tile, surf.height - y0)
-            image[y0:y0 + h, x0:x0 + w] = surf.render_tile(table, x0, y0, w, h)
+            if depth:
+                image[y0:y0 + h, x0:x0 + w], _, _, height[y0:y0 + h, x0:x0 + w] = surf.render_tile(table, x0, y0, w, h, buildings='all')
+            else:
+                image[y0:y0 + h, x0:x0 + w] = surf.render_tile(table, x0, y0, w, h)
             print(json.dumps({'tile': [x0, y0, w, h]}), flush=True)
     Image.fromarray(image).save(out / 'source.png', optimize=False)
+    if depth:
+        Image.fromarray(np.clip(np.rint(height / DEPTH_STEP), 0, 255).astype(np.uint8), 'L').save(out / 'depth.png', optimize=False)
     meta = surf.metadata(out / 'source.png', tile, table_digest(table))
+    if depth:
+        meta['depth'] = {'file': 'depth.png', 'sha256': sp.sha(out / 'depth.png'), 'metres_per_level': DEPTH_STEP,
+                         'meaning': 'height of the visible surface above the measured ground (DGM), per pixel'}
     (out / 'source.json').write_text(json.dumps(meta, indent=1) + '\n')
     print(json.dumps({'size': [surf.width, surf.height], 'source_sha256': meta['source_sha256'], 'out': str(out)}), flush=True)
     return meta

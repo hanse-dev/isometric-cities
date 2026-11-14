@@ -127,3 +127,28 @@ class TileBuildings(unittest.TestCase):
             # tagged roofs (#335577) are visible as roof pixels of their own building ids
             tagged = [k for k, a in enumerate(surf.attrs) if a and a['roof'] == (0x33, 0x55, 0x77)]
             self.assertGreater(np.isin(ids, tagged)[kind == 1].sum(), 50)
+
+
+class TileDepth(unittest.TestCase):
+    def test_height_above_ground_joins_exactly_and_marks_buildings(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder, 640)
+            surf = ts.Surface(city(640), folder / 'surface.npz', folder / 'osm.json')
+            table = surf.building_table()
+            img, ids, kind, hag = surf.render_tile(table, 0, 0, surf.width, surf.height, buildings='all')
+            np.testing.assert_array_equal(img, surf.render_tile(table, 0, 0, surf.width, surf.height))
+            tiled = np.zeros_like(hag)
+            for y0 in range(0, surf.height, 150):
+                for x0 in range(0, surf.width, 150):
+                    w, h = min(150, surf.width - x0), min(150, surf.height - y0)
+                    tiled[y0:y0 + h, x0:x0 + w] = surf.render_tile(table, x0, y0, w, h, buildings='all')[3]
+            np.testing.assert_array_equal(tiled, hag)
+            roofs, ground = hag[kind == 1], hag[(kind == 0)]
+            self.assertGreater(np.median(roofs), 5)                  # fixture roofs are 6..21 m up
+            self.assertLess(np.percentile(ground, 25), .5)         # open ground; the rest is tree canopy
+            self.assertGreater(hag.max(), 55)                         # the 60 m spire
+            meta = ts.render(city(640), folder / 'surface.npz', folder / 'osm.json', folder / 'out', depth=True)
+            from PIL import Image
+            with Image.open(folder / 'out/depth.png') as d:
+                self.assertEqual((d.mode, d.size), ('L', (surf.width, surf.height)))
+            self.assertEqual(meta['depth']['metres_per_level'], .5)

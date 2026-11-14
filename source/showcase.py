@@ -119,14 +119,24 @@ def page(image, source, metadata, *, tiled=False):
     record.pop('viewer_tiles', None)
     if tiled:
         record['viewer_tiles'] = [record['deep_zoom'], record['source_deep_zoom']]
+        if record.get('depth_deep_zoom'):
+            record['depth_tiles'] = dict(record['depth_deep_zoom'], metres_per_level=record['depth']['metres_per_level'])
     values = {'ART': script_json(data_url(image, preview=tiled)), 'SOURCE': script_json(data_url(source, preview=tiled)),
               'DATA': script_json(record), 'TITLE': html.escape(str(record.get('title', 'City')) + ' · Isometric Atlas')}
     return re.sub(r'__(ART|SOURCE|DATA|TITLE)__', lambda match: values[match[1]], HTML)
 
 
-def export(image, source, metadata, out):
+def export(image, source, metadata, out, depth=None):
     image, source, out = map(lambda p: Path(p).resolve(), (image, source, out))
     width, height = validate(image, source, metadata)
+    if depth is not None:
+        depth = Path(depth).resolve()
+        with Image.open(depth) as opened:
+            if opened.mode != 'L' or opened.size != (width, height):
+                raise ValueError('Depth must be an 8-bit greyscale image at the map size')
+        step = (metadata.get('depth') or {}).get('metres_per_level')
+        if type(step) not in (int, float) or not 0 < step <= 10:
+            raise ValueError('Depth needs metadata depth.metres_per_level in (0, 10]')
     if any(path == out or out in path.parents for path in (image, source)):
         raise ValueError('Export directory cannot contain either input')
     with ownership(out):
@@ -140,6 +150,10 @@ def export(image, source, metadata, out):
                             'resampling': 'box at lower levels; native level unchanged', 'native_upscale': 1}
         record['deep_zoom'] = build_tiles(out/'map.png', out/'map.dzi', out/'map_files')
         record['source_deep_zoom'] = build_tiles(out/'source.png', out/'source.dzi', out/'source_files')
+        if depth is not None:
+            shutil.copyfile(depth, out/'depth.png')
+            record['depth'] = dict(record['depth'], sha256=digest(depth))
+            record['depth_deep_zoom'] = build_tiles(out/'depth.png', out/'depth.dzi', out/'depth_files')
         write(out/'manifest.json', record)
         (out/'viewer.html').write_text(page(image, source, record, tiled=True))
         (out/'index.html').write_text('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=viewer.html"><a href="viewer.html">Open map</a>')
@@ -211,9 +225,10 @@ def main(argv=None):
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--metadata', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--depth', type=Path, help='Optional 8-bit height-above-ground image for the depth effect')
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(export(args.image, args.source, json.loads(args.metadata.read_text()), args.out), indent=2))
+        print(json.dumps(export(args.image, args.source, json.loads(args.metadata.read_text()), args.out, depth=args.depth), indent=2))
         return 0
     except (ValueError, OSError) as error:
         print(json.dumps({'status': 'failed', 'reason': str(error)}), file=sys.stderr)

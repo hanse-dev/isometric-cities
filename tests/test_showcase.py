@@ -65,6 +65,23 @@ class Showcase(unittest.TestCase):
         self.assertNotIn('src="https://', page)
         self.assertNotIn('__DATA__', page)
 
+    def test_depth_layer_exports_tiles_and_viewer_spec(self):
+        depth = self.folder/'depth.png'
+        Image.fromarray((np.indices((656, 2048))[1] % 200).astype('uint8'), 'L').save(depth)
+        meta = dict(self.metadata, depth={'metres_per_level': .5, 'meaning': 'height above ground'})
+        out = self.folder/'deep'
+        showcase.export(self.image, self.source, meta, out, depth=depth)
+        record = json.loads((out/'manifest.json').read_text())
+        self.assertEqual(record['depth']['sha256'], showcase.digest(depth))
+        maximum = record['depth_deep_zoom']['max_level']
+        with Image.open(out/f'depth_files/{maximum}/0_0.png') as tile:
+            self.assertEqual(tile.mode, 'L')
+        self.assertIn('"metres_per_level": 0.5', (out/'viewer.html').read_text().replace('\\u0022', '"'))
+        with self.assertRaisesRegex(ValueError, 'greyscale'):
+            showcase.export(self.image, self.source, meta, self.folder/'bad', depth=self.source)
+        with self.assertRaisesRegex(ValueError, 'metres_per_level'):
+            showcase.export(self.image, self.source, self.metadata, self.folder/'bad2', depth=depth)
+
     def test_default_demo_selects_a_new_edition_without_overwriting_previous_art(self):
         examples=self.folder/'examples';examples.mkdir()
         for city in ('dc','edinburgh'):
@@ -172,7 +189,7 @@ class Element{
  constructor(){this.style={setProperty(k,v){this[k]=v}};this.children=[];this.events={};this.dataset={};this.attrs={};this.hidden=true;this.clientWidth=728;this.clientHeight=410;this.classList={add(){},remove(){}}}
  setAttribute(k,v){this.attrs[k]=v}focus(){this.focused=true}appendChild(b){this.children.push(b);b.parent=this}remove(){this.parent.children=this.parent.children.filter(x=>x!==this)}
  addEventListener(k,f){this.events[k]=f}getBoundingClientRect(){return {left:0,top:0,width:170,height:54}}setPointerCapture(){}click(){this.onclick()}matches(){return false}}
-const ids={},events={};for(const id of ['view','art-world','source-world','picture','source-picture','source-clip','divider','pill','mini','mini-picture','extent','cities','places','places-toggle','place-list','tour','source','fit','about','info','status','credits','licence','method','download','previous','next','overview'])ids[id]=new Element();
+const ids={},events={};for(const id of ['view','art-world','source-world','picture','source-picture','source-clip','divider','pill','mini','mini-picture','extent','cities','places','places-toggle','place-list','tour','source','fit','about','info','status','credits','licence','method','download','previous','next','overview','depth','depth-canvas'])ids[id]=new Element();
 const media={matches:false,addEventListener(k,f){this.change=f}},frames=[],links=[];
 const context={document:{getElementById:id=>ids[id],createElement:()=>new Element(),addEventListener(k,f){events[k]=f}},history:{replaceState(a,b,c){links.push(c)}},location:{hash:''},addEventListener(){},performance:{now:()=>0},devicePixelRatio:1,setTimeout:()=>1,clearTimeout(){},matchMedia:()=>media,requestAnimationFrame:f=>{frames.push(f);return frames.length},ResizeObserver:class{constructor(f){this.f=f}observe(){this.f()}},encodeURIComponent,decodeURIComponent,console};vm.createContext(context);vm.runInContext(SCRIPT,context);
 const read=expr=>vm.runInContext(expr,context),run=src=>vm.runInContext(src,context);
@@ -188,9 +205,20 @@ media.matches=true;media.change();assert.equal(ids.tour.disabled,true);ids.tour.
 run('fit(false)');assert.equal(read('s'),728/2048);assert.equal(ids['art-world'].style.transform,ids['source-world'].style.transform);
 ids.view.clientWidth=390;ids.view.clientHeight=844;run('resize()');assert.equal(ids.mini.hidden,true);ids.overview.click();assert.equal(ids.mini.hidden,false);
 console.log('viewer interactions passed');'''.replace('SCRIPT',json.dumps(script))
+        levels={str(l):{'width':-(-2048//2**(11-l)),'height':-(-656//2**(11-l)),'columns':-(-(-(-2048//2**(11-l)))//256),'rows':-(-(-(-656//2**(11-l)))//256)} for l in range(12)}
+        spec={'max_level':11,'tile_size':256,'overlap':1,'levels':levels}
+        deep=dict(metadata,viewer_tiles=[spec,spec],depth_tiles=dict(spec,metres_per_level=.5))
+        deep_page=showcase.HTML.replace('__ART__','"art"').replace('__SOURCE__','"source"').replace('__DATA__',showcase.script_json(deep))
+        scripts=[];Scripts().feed(deep_page)
+        harness+=r'''
+const ids2={},context2={...context,document:{getElementById:id=>ids2[id],createElement:()=>new Element(),addEventListener(){}}};
+for(const id of Object.keys(ids))ids2[id]=new Element();ids2['depth-canvas'].getContext=()=>null;vm.createContext(context2);vm.runInContext(SCRIPT2,context2);
+assert.equal(ids2.depth.hidden,false);ids2.depth.click();assert.equal(ids2.depth.disabled,true);assert.equal(vm.runInContext('depth.on',context2),false);
+console.log('depth fallback passed');'''.replace('SCRIPT2',json.dumps(''.join(scripts)))
         result=subprocess.run(['node','-e',harness],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('viewer interactions passed',result.stdout)
+        self.assertIn('depth fallback passed',result.stdout)
 
 
 if __name__ == '__main__':

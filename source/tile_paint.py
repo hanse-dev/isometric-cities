@@ -364,11 +364,12 @@ def export(city, surface, osm, store_dir, out):
     if missing:
         raise ValueError(f'{len(missing)} tiles of this frame are not painted yet; run paint first')
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
-    ts.render(city, surface, osm, out)          # source.png and source.json for this frame
+    ts.render(city, surface, osm, out, depth=True)   # source.png, depth.png and source.json for this frame
     source = np.asarray(Image.open(out / 'source.png').convert('RGB'))
     art = compose(store, source, x0, y0)
     Image.fromarray(art).save(out / 'map.png')
     record = {'store': str(Path(store_dir).resolve()), 'frame': [x0, y0, w, h], 'tiles': [t['key'] for t in store.tiles],
+              'depth_sha256': digest(out / 'depth.png'),
               'map_sha256': digest(out / 'map.png'), 'source_sha256': digest(out / 'source.png'), 'visual_acceptance': 'unreviewed'}
     write(out / 'export.json', record)
     return record
