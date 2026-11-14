@@ -196,7 +196,7 @@ def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, 
     preset = json.loads(preset_path.read_text())
     cam = city['surface']['camera']
     prompt = caption if caption.startswith(preset['adapter']['trigger']) else preset['adapter']['trigger'] + ' ' + caption
-    store_dir = Path(store_dir)
+    store_dir = Path(store_dir).resolve()       # the native worker re-derives its command from absolute paths
     anchor_path = store_dir / 'store.json'
     anchor = read(anchor_path)['identity']['anchor'] if anchor_path.exists() else {'u0': cam['u_range_m'][0], 'y0': cam['y_range_screen_m'][0]}
     identity = {'algorithm': 'tile-store-v1', 'window': WINDOW, 'stride': STRIDE, 'feather': FEATHER, 'anchor': anchor,

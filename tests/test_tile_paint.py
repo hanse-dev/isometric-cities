@@ -88,6 +88,19 @@ class TilePaint(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'failed the water check'):
             self.run_paint(c, Painter(lake_seeds=set(seeds)), store='b')
 
+    def test_painter_receives_absolute_paths(self):
+        import os
+        seen = []
+        def painter(input_path, folder, seed):
+            seen.append((Path(input_path).is_absolute(), Path(folder).is_absolute()))
+            return Painter()(input_path, folder, seed)
+        cwd = os.getcwd(); os.chdir(self.folder)
+        try:
+            tp.paint(city((-300., 200.)), self.npz, self.osm, Path('relative-store'), 'x', tries=1, painter=painter, log=lambda *_: None)
+        finally:
+            os.chdir(cwd)
+        self.assertTrue(seen and all(a and b for a, b in seen))
+
     def test_frame_must_stay_on_the_store_lattice(self):
         self.run_paint(city((-300., 200.)), Painter(), store='s')
         with self.assertRaisesRegex(ValueError, 'pixel lattice'):
