@@ -141,6 +141,7 @@ class Surface:
         self.P = {**sp.DEFAULT_PALETTE, **spec.get('palette', {})}
         feats = sp.load_osm(osm, sp.transformer(spec, grid), self.W, self.N, self.res, self.P)
         self.ground, self.bid, self.attrs, self.G = sp.raster_layers(feats, self.dsm.shape, self.res, self.P)
+        self.squares = self.fill_split_areas(osm, sp.transformer(spec, grid))
         self.water_evidence = None
         if 'nir' in L.files:
             self.ground = self.ground.copy()
@@ -154,6 +155,35 @@ class Surface:
         self.width = round((cam['u_range_m'][1] - cam['u_range_m'][0]) * self.s)
         self.height = round((cam['y_range_screen_m'][1] - cam['y_range_screen_m'][0]) * self.s)
         self.hmin, self.hmax = float(self.dtm.min()), float(self.dsm.max())
+
+    def fill_split_areas(self, osm, tf):
+        """Multipolygon squares whose outer ring is split over several ways (Lübeck's Markt) are not
+        closed rings, so raster_layers only draws their edges as paths. Join the members into polygons
+        and fill them as plaza. Returns the plaza mask used to flatten market stalls."""
+        from shapely.geometry import LineString
+        from shapely.ops import polygonize, unary_union
+        from PIL import ImageDraw
+        plaza = np.zeros(self.dsm.shape, bool)
+        canvas = Image.new('1', (self.dsm.shape[1], self.dsm.shape[0]))
+        draw = ImageDraw.Draw(canvas)
+        for e in json.loads(Path(osm).read_text())['elements']:
+            t = e.get('tags', {})
+            if e['type'] != 'relation' or t.get('type') != 'multipolygon':
+                continue
+            if not (t.get('highway') in ('pedestrian', 'footway') or t.get('place') == 'square' or t.get('area:highway')):
+                continue
+            lines = []
+            for m in e.get('members', []):
+                if m.get('type') == 'way' and m.get('role', 'outer') in ('outer', '') and 'geometry' in m and len(m['geometry']) > 1:
+                    x, y = tf.transform([p['lon'] for p in m['geometry']], [p['lat'] for p in m['geometry']])
+                    lines.append(LineString(np.c_[(np.asarray(x) - self.W) / self.res, (self.N - np.asarray(y)) / self.res]))
+            for poly in polygonize(unary_union(lines)):
+                draw.polygon(list(poly.exterior.coords), fill=1)
+        plaza = np.asarray(canvas, bool) & (self.bid == 0)
+        self.ground = self.ground.copy()
+        self.ground[plaza] = self.G['plaza']
+        plaza |= self.ground == self.G['plaza']
+        return plaza
 
     def measured_water(self, nir):
         """Move OSM shorelines to the orthophoto: water is dark near-infrared within SHORE m of mapped
@@ -190,6 +220,7 @@ class Surface:
         canopy = ndi.binary_opening(canopy, iterations=1)
         canopy = fill_small_holes(ndi.binary_closing(canopy, iterations=3), HOLE) & (~bmask) & far3 & (ndsm > 1.0)
         structure = (~bmask) & (~canopy) & (ndsm > 1.2) & ~(road & (ndsm < 4.5))
+        structure &= ~(self.squares[r0:r1, c0:c1] & (ndsm < 5))   # market stalls and umbrellas on squares
         H = np.where(bmask | canopy | structure, dsm, dtm).astype(np.float32)
         cd = ndi.distance_transform_edt(np.pad(canopy, 1))[1:-1, 1:-1] * res
         crown = dtm + np.clip(ndi.gaussian_filter(dsm, 1.2) - dtm, 0, None) * (.45 + .55 * np.sqrt(np.clip(cd / 3.0, 0, 1)))

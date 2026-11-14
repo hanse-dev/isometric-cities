@@ -174,3 +174,25 @@ class MeasuredWater(unittest.TestCase):
             self.assertFalse(water[:, 52:60].any())     # mapped water that is bright in NIR became land
             self.assertFalse(water[100:110, 150:170].any())
             self.assertGreater(surf.water_evidence['cells_water_to_land'], 0)
+
+
+class SplitSquares(unittest.TestCase):
+    def test_multipolygon_square_from_split_ways_is_filled_and_stalls_flattened(self):
+        with tempfile.TemporaryDirectory() as t:
+            folder = Path(t); scene(folder, 240)
+            m = 111320.0
+            pt = lambda x, y: {'lon': x / m, 'lat': y / m}
+            north = [pt(-110, 10), pt(-60, 10), pt(-60, 60)]          # two open member ways form one ring
+            south = [pt(-60, 60), pt(-110, 60), pt(-110, 10)]
+            osm = json.loads((folder / 'osm.json').read_text())
+            osm['elements'] = [e for e in osm['elements'] if not ('building' in e.get('tags', {}) and -115 < e['geometry'][0]['lon'] * m < -55 and 5 < e['geometry'][0]['lat'] * m < 65)]
+            osm['elements'].append({'type': 'relation', 'id': 7, 'tags': {'type': 'multipolygon', 'highway': 'pedestrian', 'name': 'Markt'},
+                                    'members': [{'type': 'way', 'role': 'outer', 'geometry': north}, {'type': 'way', 'role': 'outer', 'geometry': south}]})
+            (folder / 'osm.json').write_text(json.dumps(osm))
+            npz = dict(np.load(folder / 'surface.npz'))
+            npz['dsm'] = npz['dtm'].copy(); npz['dsm'][100:104, 40:44] += 3          # a 3 m market stall in the square
+            np.savez_compressed(folder / 'surface.npz', **npz)
+            surf = ts.Surface(city(240), folder / 'surface.npz', folder / 'osm.json')
+            self.assertTrue((surf.ground[80:100, 20:50] == surf.G['plaza']).all())
+            lay = surf.layers(0, 240, 0, 240)
+            self.assertFalse(lay['structure'][100:104, 40:44].any())
