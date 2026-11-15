@@ -27,7 +27,7 @@ class Bundle(unittest.TestCase):
                     e['nodes'] = [9001, 9002]
             centre = lambda e: (sum(p['lon'] for p in e['geometry'][:4]) / 4, sum(p['lat'] for p in e['geometry'][:4]) / 4)
             main = min((e for e in osm['elements'] if e.get('tags', {}).get('building')), key=lambda e: sum(v * v for v in centre(e)))
-            main['tags'].update(name='Holstentor', wikidata='Q321229')
+            main['tags'].update(name='Holstentor', wikidata='Q321229', **{'addr:street': 'Holstentorplatz', 'addr:housenumber': '1', 'addr:postcode': '23552', 'addr:city': 'Lübeck'})
             cx = sum(p['lon'] for p in main['geometry'][:4]) / 4 * 111320; cy = sum(p['lat'] for p in main['geometry'][:4]) / 4 * 111320
             osm['elements'].append({'type': 'way', 'id': 99977, 'tags': {'building:part': 'yes', 'height': '30'}, 'geometry': square(cx, cy, 3)})
             (folder / 'osm.json').write_text(json.dumps(osm))
@@ -42,6 +42,8 @@ class Bundle(unittest.TestCase):
             self.assertEqual(result['buildings'], len(buildings))
             holsten = next(r for r in buildings if r['name'] == 'Holstentor')
             self.assertEqual(holsten['wikidata'], 'Q321229')
+            self.assertEqual(holsten['address'], 'Holstentorplatz 1, 23552 Lübeck')
+            self.assertEqual(bd.address({'addr:street': 'Kohlmarkt'}), 'Kohlmarkt'); self.assertIsNone(bd.address({}))
             self.assertFalse(any(r['osm'] == 'way/99977' for r in buildings))         # the part joined its parent
             hit = bd.decode_ids(np.asarray(Image.open(b / 'hitmap.png')))
             x, y = holsten['centre']

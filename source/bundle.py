@@ -44,6 +44,16 @@ def decode_ids(rgb):
     return rgb[..., 0] | (rgb[..., 1] << 8) | (rgb[..., 2] << 16)
 
 
+def address(tags):
+    """'Mengstraße 4, 23552 Lübeck' from OSM addr:* tags, or None."""
+    street = tags.get('addr:street') or tags.get('addr:place')
+    if not street:
+        return None
+    line = f"{street} {tags['addr:housenumber']}" if tags.get('addr:housenumber') else street
+    town = ' '.join(v for v in (tags.get('addr:postcode'), tags.get('addr:city')) if v)
+    return f'{line}, {town}' if town else line
+
+
 def buildings_and_owner(surf, osm_path):
     """Group renderer building ids under their parent OSM building; parts join the footprint they sit in."""
     elements = {f"{e['type']}/{e['id']}": e for e in json.loads(Path(osm_path).read_text())['elements']}
@@ -84,7 +94,7 @@ def buildings_and_owner(surf, osm_path):
     for k, i in sorted(index.items(), key=lambda kv: kv[1]):
         e = elements[surf.attrs[k]['osm']]
         t = e.get('tags', {})
-        records.append({'id': i, 'osm': surf.attrs[k]['osm'], 'name': t.get('name'), 'wikidata': t.get('wikidata'),
+        records.append({'id': i, 'osm': surf.attrs[k]['osm'], 'name': t.get('name'), 'address': address(t), 'wikidata': t.get('wikidata'),
                         'wikipedia': t.get('wikipedia'), 'kind': t.get('building') or t.get('building:part'),
                         'historic': t.get('historic'), 'start_date': t.get('start_date')})
     return owner, records
