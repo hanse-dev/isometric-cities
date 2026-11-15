@@ -36,6 +36,8 @@ class Bundle(unittest.TestCase):
             shutil.copyfile(folder / 'map/source.png', folder / 'map/map.png')
             result = bd.bundle(c, folder / 'surface.npz', folder / 'osm.json', folder / 'map', folder / 'b', log=lambda *_: None)
             b = folder / 'b'
+            g = json.loads((folder / 'b' / 'ground.json').read_text()) if (folder / 'b' / 'ground.json').exists() else None
+            self.assertIsNotNone(g); self.assertEqual(len(g['heights_dm']), g['columns'] * g['rows'])
             for name in ('manifest.json', 'camera.json', 'buildings.json', 'walkable.json', 'hitmap.png', 'map.dzi', 'hitmap.dzi', 'depth.dzi'):
                 self.assertTrue((b / name).is_file(), name)
             buildings = json.loads((b / 'buildings.json').read_text())['buildings']

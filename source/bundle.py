@@ -110,6 +110,16 @@ def project(surf, lon, lat):
     return (M @ np.stack([e, n, surf.dtm[r, c], np.ones_like(e)])).T
 
 
+def ground_grid(surf, step=10.0):
+    """Measured ground height on a coarse grid, so apps can place geographic points (e.g. memorial
+    stones) on the map: pixel = camera.pixel_matrix @ [east, north, ground(east, north), 1]."""
+    k = max(1, round(step / surf.res))
+    h = surf.dtm[k // 2::k, k // 2::k]
+    return {'crs': surf.spec['crs'], 'west': surf.W + (k // 2 + .5) * surf.res, 'north': surf.N - (k // 2 + .5) * surf.res,
+            'step_m': k * surf.res, 'columns': int(h.shape[1]), 'rows': int(h.shape[0]),
+            'heights_dm': [int(v) for v in (h.ravel() * 10).round()]}
+
+
 def walkable(surf, osm_path):
     """Streets and paths as a node/edge graph in native map pixels, with OSM ids and names."""
     nodes, edges, seen = [], [], {}
@@ -166,6 +176,7 @@ def bundle(city, surface, osm, map_dir, out, *, tile=1024, log=print):
     write(out / 'buildings.json', {'format': FORMAT, 'hitmap_encoding': 'id = r + 256*g + 65536*b; 0 = none',
                                    'buildings': [r for r in records if r['visible_px']]})
     write(out / 'walkable.json', walkable(surf, osm))
+    write(out / 'ground.json', ground_grid(surf))
     camera = dict(meta['camera'], depth=meta.get('depth'))
     write(out / 'camera.json', camera)
     pyramids = {name: build_tiles(out / f'{name}.png', out / f'{name}.dzi', out / f'{name}_files',
