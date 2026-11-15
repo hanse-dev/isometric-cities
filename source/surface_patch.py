@@ -109,9 +109,9 @@ def raster_layers(feats, shape, resolution=.5, palette=None):
                     if len(pts) > 2: bd.polygon(pts, fill=len(attrs) - 1 if role == 'outer' else 0)
             continue
         if closed:
-            if lu in ('grass', 'recreation_ground', 'cemetery', 'village_green', 'meadow') or le in ('park', 'garden', 'pitch', 'playground') or nat == 'grassland' or t.get('amenity') == 'grave_yard': k = 'grass'
+            if lu in ('grass', 'recreation_ground', 'cemetery', 'village_green', 'meadow', 'allotments', 'farmland', 'orchard', 'plant_nursery', 'greenfield') or le in ('park', 'garden', 'pitch', 'playground') or nat == 'grassland' or t.get('amenity') == 'grave_yard': k = 'grass'
             elif nat in ('wood', 'tree_row') or lu == 'forest': k = 'wood'
-            elif nat in ('scrub', 'heath'): k = 'scrub'
+            elif nat in ('scrub', 'heath', 'wetland'): k = 'scrub'
             elif nat in ('bare_rock', 'cliff', 'scree'): k = 'rock'
             elif nat == 'water' or t.get('water') or lu == 'basin': k = 'water'
             elif t.get('amenity') == 'parking': k = 'parking'
