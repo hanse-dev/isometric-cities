@@ -201,8 +201,10 @@ class Surface:
         water = ndi.binary_fill_holes(ndi.binary_closing(np.pad(water, 3, mode='edge'), iterations=2)[3:-3, 3:-3]) & ~(self.bid > 0)
         # reed belts and shallow banks give a speckle of dark and bright NIR: settle the shoreline to
         # one clean edge (majority over SPECKLE m), drop small islands and small ponds that result
-        k = disk(max(1, round(SPECKLE / self.res)))
-        water = ndi.binary_opening(np.pad(ndi.binary_closing(np.pad(water, 8, mode='edge'), k)[8:-8, 8:-8], 8, mode='edge'), k)[8:-8, 8:-8]
+        # (buildings count as water for the opening, so water between moored buildings and quays stays)
+        k, pad, built = disk(max(1, round(SPECKLE / self.res))), max(1, round(SPECKLE / self.res)) + 2, self.bid > 0
+        water = ndi.binary_closing(np.pad(water, pad, mode='edge'), k)[pad:-pad, pad:-pad]
+        water = ndi.binary_opening(np.pad(water | built, pad, mode='edge'), k)[pad:-pad, pad:-pad] & ~built
         small = round(SPECKLE_AREA / self.res ** 2)
         lab, n = ndi.label(water)
         if n:
