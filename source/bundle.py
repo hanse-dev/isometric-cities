@@ -100,11 +100,12 @@ def buildings_and_owner(surf, osm_path):
     return owner, records
 
 
-def close_gaps(hit, widths=(1, 2, 3)):
-    """Fill thin empty slits inside a building's pixels: a wall rasterised in columns leaves 1-3 px gaps
-    that would break outlines and highlights. Only empty pixels between two pixels of the same building."""
+def close_gaps(hit, across=10, down=4):
+    """Fill empty slits inside a building's pixels: walls rasterised in columns and ground seen between
+    buttresses leave gaps up to ~10 px across that break outlines and highlights. Only empty pixels
+    between two pixels of the same building are filled; neighbouring buildings stay apart."""
     hit = hit.copy()
-    for axis, ws in ((1, widths), (0, widths[:2])):
+    for axis, ws in ((1, range(1, across + 1)), (0, range(1, down + 1))):
         a = hit if axis == 1 else hit.T
         for w in ws:
             n = a.shape[1] - (w + 1)
