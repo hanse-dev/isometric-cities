@@ -26,6 +26,8 @@ import surface_patch as sp
 
 NIR_WATER = 60      # DOP near-infrared below this is open water
 SHORE = 30.0        # metres: NIR water only counts this close to mapped OSM water, so inland shadows stay land
+SPECKLE = 4.0       # metres: shoreline smoothing radius against reed-belt speckle
+SPECKLE_AREA = 200.0 # m²: smaller measured islands and ponds join their surroundings
 MAX_CELLS = 400_000_000   # whole-surface layers (~25 bytes per cell) still fit a 32 GB Mac; tiles stay small
 MARGIN = 96   # cells around a tile's core: hole fill 40 + gaussian(6) radius 24 + closing/box/gradient chains
 HOLE = 40     # canopy holes up to this many cells across are filled; larger openings stay open
@@ -197,6 +199,23 @@ class Surface:
         touching = np.unique(lab[mapped & (lab > 0)])
         water = np.isin(lab, touching[touching > 0])            # dark areas connected to mapped water
         water = ndi.binary_fill_holes(ndi.binary_closing(np.pad(water, 3, mode='edge'), iterations=2)[3:-3, 3:-3]) & ~(self.bid > 0)
+        # reed belts and shallow banks give a speckle of dark and bright NIR: settle the shoreline to
+        # one clean edge (majority over SPECKLE m), drop small islands and small ponds that result
+        k = disk(max(1, round(SPECKLE / self.res)))
+        water = ndi.binary_opening(np.pad(ndi.binary_closing(np.pad(water, 8, mode='edge'), k)[8:-8, 8:-8], 8, mode='edge'), k)[8:-8, 8:-8]
+        small = round(SPECKLE_AREA / self.res ** 2)
+        lab, n = ndi.label(water)
+        if n:
+            size = ndi.sum(water, lab, np.arange(1, n + 1))
+            keep = np.r_[False, (size >= small) | np.isin(np.arange(1, n + 1), np.unique(lab[mapped & water]))]
+            water = keep[lab]
+        lab, n = ndi.label(~water)
+        if n:
+            size = ndi.sum(~water, lab, np.arange(1, n + 1))
+            edge = np.unique(np.r_[lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+            hole = np.r_[False, size < small]; hole[edge] = False
+            water |= hole[lab]
+        water &= ~(self.bid > 0)
         removed, added = mapped & ~water, water & ~mapped
         self.ground[removed] = G['pavement']
         self.ground[added] = G['water']
@@ -219,6 +238,9 @@ class Surface:
         canopy = (~bmask) & far3 & (ndsm > 2.0) & (rough > 0.35)
         canopy = ndi.binary_opening(canopy, iterations=1)
         canopy = fill_small_holes(ndi.binary_closing(canopy, iterations=3), HOLE) & (~bmask) & far3 & (ndsm > 1.0)
+        # trees do not stand in open water: DSM noise and fenders at bridges would paint dark crowns there;
+        # crowns overhanging the bank within 3 m stay
+        canopy &= ~ndi.binary_erosion(ground == G['water'], disk(max(1, round(3.0 / res))), border_value=1)
         structure = (~bmask) & (~canopy) & (ndsm > 1.2) & ~(road & (ndsm < 4.5))
         structure &= ~(self.squares[r0:r1, c0:c1] & (ndsm < 5))   # market stalls and umbrellas on squares
         H = np.where(bmask | canopy | structure, dsm, dtm).astype(np.float32)
