@@ -68,3 +68,16 @@ class Bundle(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CloseGaps(unittest.TestCase):
+    def test_fills_slits_inside_one_building_only(self):
+        import numpy as np
+        import bundle
+        hit = np.zeros((6, 12), np.uint32)
+        hit[1:5, 1:4] = 7; hit[1:5, 5:8] = 7          # a 1 px slit inside building 7
+        hit[1:5, 9:11] = 8                            # a 1 px gap between buildings 7 and 8 stays open
+        out = bundle.close_gaps(hit)
+        self.assertTrue((out[1:5, 4] == 7).all())
+        self.assertTrue((out[1:5, 8] == 0).all())
+        self.assertTrue((out[0] == 0).all())

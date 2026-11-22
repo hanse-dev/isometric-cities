@@ -100,6 +100,23 @@ def buildings_and_owner(surf, osm_path):
     return owner, records
 
 
+def close_gaps(hit, widths=(1, 2, 3)):
+    """Fill thin empty slits inside a building's pixels: a wall rasterised in columns leaves 1-3 px gaps
+    that would break outlines and highlights. Only empty pixels between two pixels of the same building."""
+    hit = hit.copy()
+    for axis, ws in ((1, widths), (0, widths[:2])):
+        a = hit if axis == 1 else hit.T
+        for w in ws:
+            n = a.shape[1] - (w + 1)
+            left, right = a[:, :n], a[:, w + 1:]
+            ok = (left == right) & (left > 0)
+            for k in range(1, w + 1):
+                ok &= a[:, k:k + n] == 0
+            for k in range(1, w + 1):
+                a[:, k:k + n][ok] = left[ok]
+    return hit
+
+
 def project(surf, lon, lat):
     """Geographic points to native map pixels at the measured ground height."""
     tf = sp.transformer(surf.spec, None)
@@ -158,6 +175,7 @@ def bundle(city, surface, osm, map_dir, out, *, tile=1024, log=print):
             _, ids, _ = surf.render_tile(table, x0, y0, w, h, buildings=True)
             hit[y0:y0 + h, x0:x0 + w] = owner[ids]
             log(json.dumps({'hit_tile': [x0, y0, w, h]}))
+    hit = close_gaps(hit)
     out.mkdir(parents=True, exist_ok=True)
     for name in ('map.png', 'source.png', 'depth.png'):
         shutil.copyfile(map_dir / name, out / name)
