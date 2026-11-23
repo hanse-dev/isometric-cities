@@ -118,6 +118,29 @@ def close_gaps(hit, across=10, down=4):
     return hit
 
 
+def addresses_from_points(records, elements, points):
+    """Buildings without addr:* tags get the address of an OSM address point (node with addr:*) that
+    lies inside their footprint; with several points they keep the first. Nothing is guessed."""
+    from shapely.strtree import STRtree
+    E = {f"{e['type']}/{e['id']}": e for e in elements}
+    polys, recs = [], []
+    for r in records:
+        e = E.get(r['osm'])
+        if r.get('address') or not e or 'geometry' not in e or len(e['geometry']) < 4: continue
+        try: polys.append(Polygon([(p['lon'], p['lat']) for p in e['geometry']]).buffer(0)); recs.append(r)
+        except ValueError: continue
+    if not polys: return 0
+    tree, n = STRtree(polys), 0
+    for node in points:
+        a = address(node.get('tags', {}))
+        if not a or 'lon' not in node: continue
+        pt = Point(node['lon'], node['lat'])
+        for i in tree.query(pt):
+            if not recs[i].get('address') and polys[i].contains(pt):
+                recs[i]['address'] = a; recs[i]['address_source'] = f"node/{node['id']}"; n += 1
+    return n
+
+
 def project(surf, lon, lat):
     """Geographic points to native map pixels at the measured ground height."""
     tf = sp.transformer(surf.spec, None)
