@@ -48,6 +48,17 @@ def keep_water(source):
     return ndi.binary_erosion(big, iterations=8)
 
 
+def no_data(source, colour=(150, 150, 150)):
+    """Pixels the surface does not cover (the renderer's flat background beyond the data), widened a
+    little: nothing is painted or judged there."""
+    flat = (source == np.array(colour, source.dtype)).all(-1)
+    lab, n = ndi.label(flat)
+    if not n:
+        return flat
+    big = np.isin(lab, 1 + np.nonzero(ndi.sum(flat, lab, range(1, n + 1)) > 2000)[0])
+    return ndi.binary_dilation(big, iterations=24)
+
+
 def blobs(mask):
     lab, _ = ndi.label(ndi.binary_opening(mask, iterations=2))
     return sorted((int((lab[s] == k).sum()) for k, s in enumerate(ndi.find_objects(lab), 1) if (lab[s] == k).sum() >= WATER_MIN), reverse=True)
@@ -310,6 +321,7 @@ def paint(city, surface, osm, store_dir, caption, *, preset_path=None, tries=3, 
             source = np.ascontiguousarray(wide[m:m + WINDOW, m:m + WINDOW])
             ids, kind = wide_ids[m:m + WINDOW, m:m + WINDOW], wide_kind[m:m + WINDOW, m:m + WINDOW]
             kept = keep_water(wide)[m:m + WINDOW, m:m + WINDOW]
+            kept |= no_data(wide)[m:m + WINDOW, m:m + WINDOW]
             Image.fromarray(source).save(folder / 'source.png')
             inp = compose(store, source, x, y)
             Image.fromarray(inp).save(folder / 'input.png')
@@ -364,6 +376,7 @@ def recolour_stored(city, surface, osm, store_dir, redo=False, log=lambda line: 
                 raise ValueError(f"Tile {t['key']} source no longer reproduces; refusing to recolour")
             (folder / 'source-check.png').unlink()
             kept = keep_water(wide)[m:m + WINDOW, m:m + WINDOW]
+            kept |= no_data(wide)[m:m + WINDOW, m:m + WINDOW]
             if redo and (folder / 'art_raw.png').exists():
                 if digest(folder / 'art_raw.png') != t.get('art_raw_sha256', digest(folder / 'art_raw.png')):
                     raise ValueError(f"Tile {t['key']} raw art changed; refusing to recolour")
