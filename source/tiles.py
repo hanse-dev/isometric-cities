@@ -16,8 +16,8 @@ def build(image, descriptor, folder, *, resample='box'):
         raise ValueError('Tile directory must be new or empty')
     folder.mkdir(parents=True, exist_ok=True)
     with Image.open(image) as opened:
-        if opened.mode not in ('RGB', 'L') or opened.width*opened.height > 64_000_000:
-            raise ValueError('Tiles require RGB or greyscale pixels within 64 megapixels')
+        if opened.mode not in ('RGB', 'L') or opened.width*opened.height > 256_000_000:   # tiled maps grow ring by ring
+            raise ValueError('Tiles require RGB or greyscale pixels within 256 megapixels')
         original = opened.copy()
     maximum = math.ceil(math.log2(max(original.size)))
     levels, count = {}, 0
