@@ -161,8 +161,16 @@ def ground_grid(surf, step=10.0):
             'heights_dm': [int(v) for v in (h.ravel() * 10).round()]}
 
 
+def one_way(tags):
+    """1 when traffic may only follow the way's node order, -1 only against it, else 0 (roundabouts are one-way)."""
+    v = tags.get('oneway', '')
+    if v in ('yes', 'true', '1') or (tags.get('junction') in ('roundabout', 'circular') and v != 'no'):
+        return 1
+    return -1 if v in ('-1', 'reverse') else 0
+
+
 def walkable(surf, osm_path):
-    """Streets and paths as a node/edge graph in native map pixels, with OSM ids and names."""
+    """Streets and paths as a node/edge graph in native map pixels, with OSM ids, names and one-way direction."""
     nodes, edges, seen = [], [], {}
     for e in json.loads(Path(osm_path).read_text())['elements']:
         t = e.get('tags', {})
@@ -174,7 +182,10 @@ def walkable(surf, osm_path):
             if node not in seen:
                 seen[node] = len(nodes); nodes.append([round(float(x), 1), round(float(y), 1)])
             ids.append(seen[node])
-        edges.append({'osm': f"way/{e['id']}", 'highway': t['highway'], 'name': t.get('name'), 'nodes': ids})
+        edge = {'osm': f"way/{e['id']}", 'highway': t['highway'], 'name': t.get('name'), 'nodes': ids}
+        if one_way(t):
+            edge['oneway'] = one_way(t)
+        edges.append(edge)
     return {'coordinates': 'native map pixels', 'nodes': nodes, 'ways': edges}
 
 

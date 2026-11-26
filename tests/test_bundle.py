@@ -61,6 +61,13 @@ class Bundle(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'new or empty'):
                 bd.bundle(c, folder / 'surface.npz', folder / 'osm.json', folder / 'map', folder / 'b', log=lambda *_: None)
 
+    def test_one_way_follows_osm(self):
+        self.assertEqual(bd.one_way({'oneway': 'yes'}), 1)
+        self.assertEqual(bd.one_way({'oneway': '-1'}), -1)
+        self.assertEqual(bd.one_way({'junction': 'roundabout'}), 1)
+        self.assertEqual(bd.one_way({'junction': 'roundabout', 'oneway': 'no'}), 0)
+        self.assertEqual(bd.one_way({'highway': 'residential'}), 0)
+
     def test_id_encoding_round_trips(self):
         ids = np.array([[0, 1, 255, 256, 70000, 2**24 - 1]], np.uint32)
         np.testing.assert_array_equal(bd.decode_ids(bd.encode_ids(ids)), ids)
